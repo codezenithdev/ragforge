@@ -67,6 +67,17 @@ class Settings(BaseSettings):
     chunker_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     semantic_chunk_breakpoint_percentile: float = 90.0
 
+    # --- Agentic pipeline (decomposition, HyDE, CRAG, corrective web search) ---
+    num_sub_queries: int = 6
+    # Top-chunk relevance probability (sigmoid of cross-encoder score) below which
+    # CRAG triggers a corrective web search.
+    crag_confidence_threshold: float = 0.3
+    tavily_max_results: int = 5
+
+    # --- Generation / evaluation ---
+    # Sections scoring below this faithfulness value get a low-confidence flag.
+    faithfulness_warn_threshold: float = 0.6
+
 
 @lru_cache
 def get_settings() -> Settings:

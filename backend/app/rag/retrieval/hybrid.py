@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 
 from app.core.config import settings
 from app.rag.retrieval.bm25_index import BM25Index
@@ -31,13 +32,23 @@ class HybridRetriever:
         self.rrf_k = rrf_k or settings.rrf_k
 
     async def retrieve(
-        self, query: str, query_embedding: list[float], top_k: int | None = None
+        self,
+        query: str,
+        query_embedding: list[float],
+        top_k: int | None = None,
+        filter_doc_ids: Iterable[str] | None = None,
     ) -> list[ScoredChunk]:
         top_k = top_k or settings.top_k_retrieval
         vector_hits, bm25_hits = await asyncio.gather(
-            self.vector_store.similarity_search(query_embedding, top_k=top_k),
+            self.vector_store.similarity_search(
+                query_embedding, top_k=top_k, filter_doc_ids=filter_doc_ids
+            ),
             self.bm25_index.search(query, top_k=top_k),
         )
+        # BM25 has no native metadata filter; scope its hits to the same doc set.
+        if filter_doc_ids:
+            allowed = set(filter_doc_ids)
+            bm25_hits = [c for c in bm25_hits if c.metadata.get("document_id") in allowed]
         fused = self._rrf_fuse(vector_hits, bm25_hits)
         logger.info(
             "HybridRetriever: vector=%d bm25=%d fused=%d (rrf_k=%d)",

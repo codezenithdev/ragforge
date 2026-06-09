@@ -25,11 +25,12 @@ pydantic-settings==2.7.1          # BaseSettings moved here in Pydantic v2
 
 # --- LLMs / orchestration ---
 anthropic==0.42.0
-openai==1.59.0
+openai==1.59.2
 instructor==1.7.2
 langchain-core==0.3.28
 langchain-anthropic==0.3.1
 langchain-openai==0.2.14          # LangChain embeddings wrapper for ragas
+langchain-community==0.3.13        # required by ragas 0.2.x (still ships chat_models.vertexai)
 langgraph==0.2.60
 
 # --- Retrieval / re-ranking / chunking ---
