@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     # --- Retrieval / chunking knobs ---
     top_k_retrieval: int = 50
     top_k_rerank: int = 10
+    rrf_k: int = 60  # Reciprocal Rank Fusion constant
     chunk_size: int = 512
     chunk_overlap: int = 64
 
