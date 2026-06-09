@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     # --- Embeddings (text-embedding-3-small => 1536 dims) ---
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
+    embedding_batch_size: int = 100
 
     # --- Cross-encoder re-ranker ---
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
@@ -57,6 +58,13 @@ class Settings(BaseSettings):
     top_k_rerank: int = 10
     chunk_size: int = 512
     chunk_overlap: int = 64
+
+    # --- Semantic chunking (local model for sentence-adjacency similarity) ---
+    # Split at adjacent-sentence distance outliers above this percentile. This
+    # adapts per-document and is robust across embedding models; a fixed cosine
+    # threshold over-splits badly with MiniLM.
+    chunker_embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    semantic_chunk_breakpoint_percentile: float = 90.0
 
 
 @lru_cache
