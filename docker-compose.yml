@@ -1,0 +1,93 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: briefr-postgres
+    environment:
+      POSTGRES_USER: briefr
+      POSTGRES_PASSWORD: briefr
+      POSTGRES_DB: briefr
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U briefr -d briefr"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: briefr-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Vector store. The official image is the Rust-based Chroma server (no python /
+  # curl / wget inside), so the healthcheck uses the bundled bash + /dev/tcp to
+  # probe the v2 heartbeat. The server persists to /data inside the container.
+  chroma:
+    image: chromadb/chroma:1.5.9
+    container_name: briefr-chroma
+    environment:
+      ANONYMIZED_TELEMETRY: "FALSE"
+    ports:
+      - "8001:8000"
+    volumes:
+      - chromadata:/data
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        # NOTE: $$line escapes Compose's variable interpolation -> literal $line.
+        - 'exec 3<>/dev/tcp/127.0.0.1/8000; printf "GET /api/v2/heartbeat HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; read -r line <&3; [[ "$$line" == *200* ]]'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # backend/frontend Dockerfiles are added in a later phase. The services are
+  # declared here per the project spec, but `docker compose up postgres redis
+  # chroma` only starts the infra services above, so this file is usable now.
+  backend:
+    build: ./backend
+    container_name: briefr-backend
+    # .env holds local-dev hosts (localhost); inside the compose network the
+    # backend must reach Postgres / Redis / Chroma by service name, so override.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://briefr:briefr@postgres:5432/briefr
+      REDIS_URL: redis://redis:6379
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: briefr-frontend
+    environment:
+      VITE_API_URL: http://localhost:8000/api/v1
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  chromadata:

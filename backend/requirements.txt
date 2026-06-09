@@ -1,0 +1,54 @@
+# Briefr backend dependencies — pinned. Installed inside the Linux backend
+# container (Phase 10 Dockerfile). The heavy ML deps (torch via
+# sentence-transformers) are Linux-targeted; do not expect a clean local
+# Windows install. A lockfile pass happens when the image is first built.
+
+# --- Web framework / server ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+httpx==0.28.1
+
+# --- Relational DB (documents, briefs, sub-queries) ---
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+psycopg2-binary==2.9.10
+alembic==1.14.0
+
+# --- Vector store (ChromaDB client; pinned to match the
+#     chromadb/chroma:1.5.9 server image in docker-compose.yml) ---
+chromadb==1.5.9
+
+# --- Config ---
+pydantic==2.10.4
+pydantic-settings==2.7.1          # BaseSettings moved here in Pydantic v2
+
+# --- LLMs / orchestration ---
+anthropic==0.42.0
+openai==1.59.0
+instructor==1.7.2
+langchain-core==0.3.28
+langchain-anthropic==0.3.1
+langchain-openai==0.2.14          # LangChain embeddings wrapper for ragas
+langgraph==0.2.60
+
+# --- Retrieval / re-ranking / chunking ---
+rank-bm25==0.2.2
+sentence-transformers==3.3.1
+nltk==3.9.1                       # sentence tokenizer for the semantic chunker
+
+# --- Ingestion / loaders ---
+pdfplumber==0.11.4
+python-docx==1.1.2
+beautifulsoup4==4.12.3            # WebLoader httpx + BeautifulSoup fallback
+tavily-python==0.5.0
+
+# --- Evaluation ---
+ragas==0.2.10
+
+# --- Job queue / cache ---
+redis==5.2.1
+celery==5.4.0
+
+# --- Utilities ---
+tenacity==9.0.0                   # exponential-backoff retry for the embedder
