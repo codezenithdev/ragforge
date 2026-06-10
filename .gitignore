@@ -32,3 +32,4 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+.gstack/
