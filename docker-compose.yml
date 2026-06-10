@@ -6,8 +6,11 @@ services:
       POSTGRES_USER: briefr
       POSTGRES_PASSWORD: briefr
       POSTGRES_DB: briefr
+    # Host port 5433: a native PostgreSQL 17 already owns host :5432, which
+    # would shadow this container for host-based connections (alembic, local
+    # uvicorn). In-network services still use postgres:5432.
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -68,6 +71,30 @@ services:
       CHROMA_PORT: "8000"
     ports:
       - "8000:8000"
+    volumes:
+      - ./backend:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+
+  # Celery worker that runs the LangGraph brief pipeline. Reuses the backend
+  # image; like backend, it only becomes startable once the Dockerfile lands.
+  worker:
+    build: ./backend
+    container_name: briefr-worker
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://briefr:briefr@postgres:5432/briefr
+      REDIS_URL: redis://redis:6379
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+    command: celery -A app.core.celery_app worker --loglevel=info
     volumes:
       - ./backend:/app
     depends_on:

@@ -10,15 +10,22 @@ faithfulness cutoffs, semantic-chunk threshold) to this same Settings object.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The .env lives at the repo root. Resolve it from this file's location so the
+# settings load regardless of the process CWD (uvicorn/celery run from
+# backend/); real environment variables (e.g. injected by docker compose)
+# always take precedence over the file. Missing candidates are skipped.
+_REPO_ROOT_ENV = Path(__file__).resolve().parents[3] / ".env"
 
 
 class Settings(BaseSettings):
     """Typed settings loaded from the environment / ``.env``."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=(_REPO_ROOT_ENV, ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
@@ -30,9 +37,13 @@ class Settings(BaseSettings):
     tavily_api_key: str = ""
 
     # --- Infrastructure ---
-    database_url: str = "postgresql+asyncpg://briefr:briefr@localhost:5432/briefr"
+    # Local default uses host port 5433 (the container's 5432 is remapped there
+    # because a native PostgreSQL 17 owns host :5432). Compose overrides this to
+    # postgres:5432 for in-network services.
+    database_url: str = "postgresql+asyncpg://briefr:briefr@localhost:5433/briefr"
     redis_url: str = "redis://localhost:6379"
     environment: str = "development"
+    cors_origins: str = "*"
 
     # --- Vector store (ChromaDB, server mode) ---
     # Local-dev default targets the host-published port (8001 -> container 8000).
