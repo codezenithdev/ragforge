@@ -2,6 +2,7 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: briefr-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: briefr
       POSTGRES_PASSWORD: briefr
@@ -22,6 +23,7 @@ services:
   redis:
     image: redis:7-alpine
     container_name: briefr-redis
+    restart: unless-stopped
     ports:
       - "6379:6379"
     healthcheck:
@@ -36,6 +38,7 @@ services:
   chroma:
     image: chromadb/chroma:1.5.9
     container_name: briefr-chroma
+    restart: unless-stopped
     environment:
       ANONYMIZED_TELEMETRY: "FALSE"
     ports:
@@ -59,6 +62,7 @@ services:
   backend:
     build: ./backend
     container_name: briefr-backend
+    restart: unless-stopped
     # .env holds local-dev hosts (localhost); inside the compose network the
     # backend must reach Postgres / Redis / Chroma by service name, so override.
     env_file:
@@ -73,6 +77,16 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
@@ -86,6 +100,7 @@ services:
   worker:
     build: ./backend
     container_name: briefr-worker
+    restart: unless-stopped
     env_file:
       - path: .env
         required: false
@@ -106,14 +121,19 @@ services:
         condition: service_healthy
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # Baked into the bundle at build time (the browser calls the API on
+        # the HOST-published port, not the compose-internal one).
+        VITE_API_URL: http://localhost:8000/api/v1
     container_name: briefr-frontend
-    environment:
-      VITE_API_URL: http://localhost:8000/api/v1
+    restart: unless-stopped
     ports:
       - "3000:3000"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   pgdata:
