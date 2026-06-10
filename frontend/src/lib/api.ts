@@ -7,6 +7,18 @@ const API_URL: string =
   (import.meta.env.VITE_API_URL as string | undefined) ??
   "http://localhost:8000/api/v1";
 
+// Sent as the X-API-Key header on every request when configured (P0.1). Unset
+// in local dev, where the backend leaves auth disabled.
+const API_KEY: string | undefined = import.meta.env.VITE_API_KEY as
+  | string
+  | undefined;
+
+/** Merge the configured API key header into a request's headers, if any. */
+function withAuth(headers?: HeadersInit): HeadersInit | undefined {
+  if (!API_KEY) return headers;
+  return { ...(headers ?? {}), "X-API-Key": API_KEY };
+}
+
 export type BriefStatus = "pending" | "processing" | "complete" | "failed";
 
 export interface DocumentInfo {
@@ -83,7 +95,10 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_URL}${path}`, init);
+  const response = await fetch(`${API_URL}${path}`, {
+    ...init,
+    headers: withAuth(init?.headers),
+  });
   if (!response.ok) {
     let detail = response.statusText;
     try {

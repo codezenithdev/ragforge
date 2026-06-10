@@ -30,6 +30,12 @@ class PDFLoader:
         source = self.filepath.name
         blocks: list[dict[str, Any]] = []
         with pdfplumber.open(str(self.filepath)) as pdf:
+            # Cap page count before extracting any text (P0.4) so a huge PDF
+            # can't pin CPU/memory in the parse loop.
+            if settings.max_pdf_pages and len(pdf.pages) > settings.max_pdf_pages:
+                raise ValueError(
+                    f"PDF has {len(pdf.pages)} pages (max {settings.max_pdf_pages})"
+                )
             for page_number, page in enumerate(pdf.pages, start=1):
                 text = (page.extract_text() or "").strip()
                 if not text:

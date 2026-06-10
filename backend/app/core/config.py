@@ -45,12 +45,38 @@ class Settings(BaseSettings):
     environment: str = "development"
     cors_origins: str = "*"
 
+    # --- API authentication (P0.1) ---
+    # Shared secret required in the ``X-API-Key`` header on every API endpoint.
+    # In development an empty value disables the check (local/tests/frontend run
+    # without friction); in any other environment an empty value is a fatal
+    # boot error (see ``_validate_production``).
+    api_key: str = ""
+
+    # --- Rate limiting & spend controls (P0.2) ---
+    # ``rate_limit`` is the per-identity request ceiling (slowapi string form)
+    # applied to every endpoint by the middleware. The brief caps bound LLM
+    # spend: ``max_concurrent_briefs`` limits in-flight (pending/processing)
+    # briefs globally; ``daily_brief_limit`` limits briefs created per UTC day.
+    # 0 disables a given cap.
+    rate_limit: str = "60/minute"
+    max_concurrent_briefs: int = 5
+    daily_brief_limit: int = 200
+
+    # --- Upload hardening (P0.4) ---
+    # Reject uploads larger than this before reading them into memory, and cap
+    # the page count parsed from a PDF.
+    max_upload_bytes: int = 10 * 1024 * 1024  # 10 MiB
+    max_pdf_pages: int = 200
+
     # --- Vector store (ChromaDB, server mode) ---
     # Local-dev default targets the host-published port (8001 -> container 8000).
     # In compose the backend overrides chroma_host=chroma, chroma_port=8000.
     chroma_host: str = "localhost"
     chroma_port: int = 8001
     chroma_collection: str = "briefr_chunks"
+    # Optional token (P0.6). When set, the client authenticates with the Chroma
+    # server's token authn provider; empty disables it (local dev runs open).
+    chroma_auth_token: str = ""
 
     # --- Embeddings (text-embedding-3-small => 1536 dims) ---
     embedding_model: str = "text-embedding-3-small"
@@ -88,6 +114,45 @@ class Settings(BaseSettings):
     # --- Generation / evaluation ---
     # Sections scoring below this faithfulness value get a low-confidence flag.
     faithfulness_warn_threshold: float = 0.6
+
+    # ------------------------------------------------------------------ #
+    # Derived helpers & production validation
+    # ------------------------------------------------------------------ #
+
+    @property
+    def is_production(self) -> bool:
+        """True for any environment other than local development."""
+        return self.environment.strip().lower() not in {"development", "dev", "local", "test"}
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        """``cors_origins`` parsed into a clean list of origins."""
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    def model_post_init(self, _context: object) -> None:
+        """Fail fast on insecure production configuration (P0.3 / P0.5).
+
+        In development everything is permitted so local runs, tests, and the
+        frontend work without keys. In any other environment a missing API key,
+        a wildcard CORS policy, or a missing required service key aborts boot
+        instead of silently exposing the service / failing per-request.
+        """
+        if not self.is_production:
+            return
+
+        problems: list[str] = []
+        if not self.api_key:
+            problems.append("api_key is required (set API_KEY)")
+        if "*" in self.cors_origin_list or not self.cors_origin_list:
+            problems.append("cors_origins must be an explicit allowlist, not '*'")
+        for name in ("anthropic_api_key", "openai_api_key", "tavily_api_key"):
+            if not getattr(self, name):
+                problems.append(f"{name} is required")
+        if problems:
+            raise RuntimeError(
+                "Insecure production configuration (environment="
+                f"{self.environment!r}): " + "; ".join(problems)
+            )
 
 
 @lru_cache

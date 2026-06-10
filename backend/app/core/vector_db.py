@@ -26,7 +26,18 @@ logger = logging.getLogger(__name__)
 # Cosine space matches the normalized embeddings produced by the embedder.
 COLLECTION_METADATA: dict[str, str] = {"hnsw:space": "cosine"}
 
-_CHROMA_SETTINGS = ChromaSettings(anonymized_telemetry=False)
+def _build_chroma_settings() -> ChromaSettings:
+    """Chroma client settings, with token auth wired in when configured (P0.6)."""
+    kwargs: dict[str, object] = {"anonymized_telemetry": False}
+    if settings.chroma_auth_token:
+        kwargs.update(
+            chroma_client_auth_provider="chromadb.auth.token_authn.TokenAuthClientProvider",
+            chroma_client_auth_credentials=settings.chroma_auth_token,
+        )
+    return ChromaSettings(**kwargs)
+
+
+_CHROMA_SETTINGS = _build_chroma_settings()
 
 
 async def get_async_chroma_client() -> AsyncClientAPI:

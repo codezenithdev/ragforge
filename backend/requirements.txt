@@ -3,6 +3,8 @@ fastapi==0.115.6
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
 httpx==0.28.1
+slowapi==0.1.9                    # per-identity rate limiting (Redis-backed)
+gunicorn==23.0.0                  # prod process manager (uvicorn workers)
 
 # --- Relational DB (documents, briefs, sub-queries) ---
 sqlalchemy[asyncio]==2.0.36

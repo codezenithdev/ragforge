@@ -1,0 +1,160 @@
+# Production compose (P0.6 — infra hardening). Self-contained, NOT an overlay on
+# docker-compose.yml: Compose *concatenates* `ports` across files, so an overlay
+# cannot un-publish the dev Postgres port. Run this file standalone with a prod
+# secrets file:
+#
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+#
+# Every secret below uses ${VAR:?message} so Compose REFUSES to start if it is
+# unset — there are no default credentials. Generate strong values, e.g.:
+#   POSTGRES_PASSWORD=$(openssl rand -hex 24)
+#   REDIS_PASSWORD=$(openssl rand -hex 24)
+#   CHROMA_AUTH_TOKEN=$(openssl rand -hex 24)
+#   API_KEY=$(openssl rand -hex 32)
+#
+# Differences from the dev compose:
+#   - Postgres port is NOT published (network-internal only).
+#   - Redis requires a password (requirepass); Chroma requires a token.
+#   - backend runs gunicorn (no --reload, no source bind-mount), N workers.
+#   - ENVIRONMENT=production, so the app fail-fasts on missing keys / '*' CORS.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: briefr-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-briefr}
+    # No published ports: reachable only on the internal compose network.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB:-briefr}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: briefr-redis
+    restart: unless-stopped
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set a strong REDIS_PASSWORD}"]
+    # No published port: internal only.
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  chroma:
+    image: chromadb/chroma:1.5.9
+    container_name: briefr-chroma
+    restart: unless-stopped
+    environment:
+      ANONYMIZED_TELEMETRY: "FALSE"
+      # Token auth: clients must send Authorization: Bearer <token>.
+      CHROMA_SERVER_AUTHN_PROVIDER: "chromadb.auth.token_authn.TokenAuthenticationServerProvider"
+      CHROMA_SERVER_AUTHN_CREDENTIALS: ${CHROMA_AUTH_TOKEN:?set a strong CHROMA_AUTH_TOKEN}
+    # No published port: internal only.
+    volumes:
+      - chromadata:/data
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/8000; printf "GET /api/v2/heartbeat HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3; read -r line <&3; [[ "$$line" == *200* ]]'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build: ./backend
+    container_name: briefr-backend
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      API_KEY: ${API_KEY:?set a strong API_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS:?set an explicit CORS allowlist (not *)}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?required}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:?required}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-briefr}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      CHROMA_AUTH_TOKEN: ${CHROMA_AUTH_TOKEN}
+    # Prod entrypoint: gunicorn + uvicorn workers, no --reload, no bind-mount.
+    command:
+      - gunicorn
+      - app.main:app
+      - -k
+      - uvicorn.workers.UvicornWorker
+      - -w
+      - "4"
+      - -b
+      - "0.0.0.0:8000"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)"
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+
+  worker:
+    build: ./backend
+    container_name: briefr-worker
+    restart: unless-stopped
+    environment:
+      ENVIRONMENT: production
+      API_KEY: ${API_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?required}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:?required}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-briefr}
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      CHROMA_HOST: chroma
+      CHROMA_PORT: "8000"
+      CHROMA_AUTH_TOKEN: ${CHROMA_AUTH_TOKEN}
+    command: celery -A app.core.celery_app worker --loglevel=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      chroma:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${PUBLIC_API_URL:?set the browser-facing API URL, e.g. https://api.example.com/api/v1}
+        VITE_API_KEY: ${API_KEY}
+    container_name: briefr-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  chromadata:
