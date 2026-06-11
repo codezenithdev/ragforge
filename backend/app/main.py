@@ -22,6 +22,7 @@ from app.api.routes import briefs, documents, eval as eval_routes
 from app.core.config import settings
 from app.core.database import init_models
 from app.core.ratelimit import limiter
+from app.core.redis_client import close_redis
 from app.core.security import require_api_key
 from app.core.vector_db import chroma_heartbeat
 
@@ -38,6 +39,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     await chroma_heartbeat()
     logger.info("Briefr API ready (environment=%s)", settings.environment)
     yield
+    await close_redis()
 
 
 # Gate the interactive docs / OpenAPI schema in production (P0.1): they expose

@@ -27,5 +27,22 @@ celery_app.conf.update(
     task_track_started=True,
     # One long-running LLM pipeline at a time per worker process.
     worker_prefetch_multiplier=1,
-    task_acks_late=False,
+    # P1.2: ack only after the task finishes so a worker crash redelivers the job
+    # (idempotency in _run_pipeline makes re-delivery safe); a lost worker requeues.
+    task_acks_late=True,
+    task_reject_on_worker_lost=True,
+    # Periodic maintenance (run beat alongside the worker: `-B` in dev; a dedicated
+    # beat service in prod).
+    beat_schedule={
+        # P1.4: purge orphaned Chroma vectors and fail documents stuck mid-ingest.
+        "reconcile-storage": {
+            "task": "app.tasks.reconcile_storage_task",
+            "schedule": float(settings.reconcile_interval_seconds),
+        },
+        # P1.2: fail briefs left in 'processing' past the deadline (worker lost).
+        "sweep-stuck-briefs": {
+            "task": "app.tasks.sweep_stuck_briefs_task",
+            "schedule": float(settings.brief_sweep_interval_seconds),
+        },
+    },
 )

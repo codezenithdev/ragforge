@@ -2,6 +2,10 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# Celery beat scheduler state (generated when running the worker with -B)
+celerybeat-schedule*
+celerybeat.pid
 .eggs/
 .pytest_cache/
 .mypy_cache/

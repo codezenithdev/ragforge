@@ -86,6 +86,7 @@ services:
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
       CHROMA_AUTH_TOKEN: ${CHROMA_AUTH_TOKEN}
+      UPLOAD_DIR: /data/uploads
     # Prod entrypoint: gunicorn + uvicorn workers, no --reload, no bind-mount.
     command:
       - gunicorn
@@ -96,6 +97,8 @@ services:
       - "4"
       - -b
       - "0.0.0.0:8000"
+    volumes:
+      - uploads:/data/uploads
     ports:
       - "8000:8000"
     healthcheck:
@@ -132,7 +135,11 @@ services:
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
       CHROMA_AUTH_TOKEN: ${CHROMA_AUTH_TOKEN}
-    command: celery -A app.core.celery_app worker --loglevel=info
+      UPLOAD_DIR: /data/uploads
+    # Single worker container, so embedded beat (-B) is safe here.
+    command: celery -A app.core.celery_app worker --loglevel=info -B
+    volumes:
+      - uploads:/data/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -158,3 +165,4 @@ services:
 volumes:
   pgdata:
   chromadata:
+  uploads:

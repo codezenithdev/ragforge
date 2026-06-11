@@ -21,11 +21,17 @@ function withAuth(headers?: HeadersInit): HeadersInit | undefined {
 
 export type BriefStatus = "pending" | "processing" | "complete" | "failed";
 
+export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
+
 export interface DocumentInfo {
   document_id: string;
   name: string;
   source_type: string;
-  created_at: string;
+  /** Ingestion lifecycle; only "ready" docs are usable for briefs. */
+  status?: DocumentStatus;
+  num_chunks?: number;
+  error?: string | null;
+  created_at?: string;
 }
 
 export interface BriefSection {
@@ -113,9 +119,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function uploadDocument(file: File): Promise<DocumentInfo & { num_chunks: number }> {
+export async function uploadDocument(file: File): Promise<DocumentInfo> {
   const form = new FormData();
   form.append("file", file);
+  // 202 Accepted: ingestion runs async; the returned doc starts as "pending".
   return request("/documents/upload", { method: "POST", body: form });
 }
 
@@ -152,18 +159,4 @@ export async function runEval(briefId: string): Promise<RagasEval & { brief_id: 
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ brief_id: briefId }),
   });
-}
-
-/** Poll a brief every `intervalMs` until it completes or fails. */
-export async function pollBrief(
-  briefId: string,
-  onUpdate: (brief: Brief) => void,
-  intervalMs = 2000,
-): Promise<Brief> {
-  for (;;) {
-    const brief = await getBrief(briefId);
-    onUpdate(brief);
-    if (brief.status === "complete" || brief.status === "failed") return brief;
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
-  }
 }

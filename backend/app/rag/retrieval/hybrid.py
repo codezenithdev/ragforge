@@ -39,16 +39,14 @@ class HybridRetriever:
         filter_doc_ids: Iterable[str] | None = None,
     ) -> list[ScoredChunk]:
         top_k = top_k or settings.top_k_retrieval
+        # Both sides scope to the same doc set; BM25 now filters before ranking
+        # (P1.7) rather than post-filtering a globally-truncated top_k.
         vector_hits, bm25_hits = await asyncio.gather(
             self.vector_store.similarity_search(
                 query_embedding, top_k=top_k, filter_doc_ids=filter_doc_ids
             ),
-            self.bm25_index.search(query, top_k=top_k),
+            self.bm25_index.search(query, top_k=top_k, filter_doc_ids=filter_doc_ids),
         )
-        # BM25 has no native metadata filter; scope its hits to the same doc set.
-        if filter_doc_ids:
-            allowed = set(filter_doc_ids)
-            bm25_hits = [c for c in bm25_hits if c.metadata.get("document_id") in allowed]
         fused = self._rrf_fuse(vector_hits, bm25_hits)
         logger.info(
             "HybridRetriever: vector=%d bm25=%d fused=%d (rrf_k=%d)",

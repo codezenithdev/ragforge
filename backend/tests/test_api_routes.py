@@ -131,6 +131,30 @@ async def test_create_brief_rejected_when_concurrency_cap_hit(client: AsyncClien
 # --------------------------------------------------------------------------- #
 # P0.4 — upload hardening
 # --------------------------------------------------------------------------- #
+async def test_upload_accepts_valid_pdf_and_enqueues(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Slim async upload (B3): validate + stage + enqueue, returns 202 pending.
+    _use_session(_FakeSession())
+    calls: list[tuple] = []
+
+    class _StubTask:
+        def delay(self, *args) -> None:
+            calls.append(args)
+
+    monkeypatch.setattr("app.api.routes.documents.ingest_document_task", _StubTask())
+
+    files = {"file": ("doc.pdf", b"%PDF-1.4 minimal pdf content here", "application/pdf")}
+    resp = await client.post("/api/v1/documents/upload", files=files, headers=AUTH)
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["status"] == "pending"
+    # Ingestion was enqueued with (doc_id, staged_path, source_type).
+    assert len(calls) == 1
+    assert calls[0][0] == body["document_id"]
+    assert calls[0][2] == "pdf"
+
+
 async def test_upload_rejects_mismatched_magic_bytes(client: AsyncClient) -> None:
     _use_session(_FakeSession())
     files = {"file": ("evil.pdf", b"this is not really a pdf", "application/pdf")}

@@ -89,14 +89,30 @@ class VectorStore:
         logger.info("VectorStore: similarity_search -> %d hits (top_k=%d)", len(chunks), top_k)
         return chunks
 
-    async def fetch_corpus(self) -> tuple[list[str], list[str], list[dict[str, Any]]]:
+    async def fetch_corpus(
+        self, page_size: int = 1000
+    ) -> tuple[list[str], list[str], list[dict[str, Any]]]:
         """Return (ids, documents, metadatas) for the whole collection — used to
-        (re)build the BM25 index."""
+        (re)build the BM25 index. Paginated (P1.3) so an unbounded ``get()`` can't
+        pull the entire corpus into memory in one allocation."""
         collection = await self._get_collection()
-        result = await collection.get(include=["documents", "metadatas"])
-        ids = result.get("ids") or []
-        documents = result.get("documents") or []
-        metadatas = result.get("metadatas") or [{} for _ in ids]
+        ids: list[str] = []
+        documents: list[str] = []
+        metadatas: list[dict[str, Any]] = []
+        offset = 0
+        while True:
+            page = await collection.get(
+                include=["documents", "metadatas"], limit=page_size, offset=offset
+            )
+            page_ids = page.get("ids") or []
+            if not page_ids:
+                break
+            ids.extend(page_ids)
+            documents.extend(page.get("documents") or [])
+            metadatas.extend(page.get("metadatas") or [{} for _ in page_ids])
+            if len(page_ids) < page_size:
+                break
+            offset += page_size
         logger.info("VectorStore: fetched corpus of %d chunks", len(ids))
         return ids, documents, metadatas
 

@@ -12,7 +12,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum as SAEnum, String, Text, func
+from sqlalchemy import DateTime, Enum as SAEnum, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -28,6 +28,16 @@ class SourceType(str, enum.Enum):
     docx = "docx"
 
 
+class DocumentStatus(str, enum.Enum):
+    """Ingestion lifecycle. Upload returns immediately as ``pending``; the Celery
+    ingestion task moves it ``processing`` -> ``ready`` (or ``failed``)."""
+
+    pending = "pending"
+    processing = "processing"
+    ready = "ready"
+    failed = "failed"
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -38,6 +48,14 @@ class Document(Base):
     source_type: Mapped[SourceType] = mapped_column(
         SAEnum(SourceType, name="source_type"), nullable=False
     )
+    status: Mapped[DocumentStatus] = mapped_column(
+        SAEnum(DocumentStatus, name="document_status"),
+        nullable=False,
+        default=DocumentStatus.pending,
+        server_default=DocumentStatus.ready.value,  # pre-existing rows are already ingested
+    )
+    num_chunks: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

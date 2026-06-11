@@ -84,7 +84,7 @@ export function UploadZone() {
       {error && <p className="mt-2 text-xs text-red-600">{error}</p>}
       {upload.isSuccess && !upload.isPending && (
         <p className="mt-2 text-xs text-emerald-700">
-          Indexed “{upload.data.name}” ({upload.data.num_chunks} chunks)
+          Uploaded “{upload.data.name}” — indexing in progress…
         </p>
       )}
     </div>

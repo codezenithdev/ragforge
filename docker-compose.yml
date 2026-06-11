@@ -73,10 +73,14 @@ services:
       REDIS_URL: redis://redis:6379
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
+      # Shared with the worker so the ingestion task can read staged uploads (P1.6).
+      UPLOAD_DIR: /data/uploads
     ports:
       - "8000:8000"
+    # Source bind-mount + --reload live in docker-compose.override.yml (dev only);
+    # the base image runs gunicorn (P1.5).
     volumes:
-      - ./backend:/app
+      - uploads:/data/uploads
     healthcheck:
       test:
         - CMD
@@ -109,9 +113,12 @@ services:
       REDIS_URL: redis://redis:6379
       CHROMA_HOST: chroma
       CHROMA_PORT: "8000"
-    command: celery -A app.core.celery_app worker --loglevel=info
+      UPLOAD_DIR: /data/uploads
+    # -B runs the beat scheduler embedded in the worker (dev convenience; use a
+    # dedicated beat service in prod) so the reconcile sweeper fires periodically.
+    command: celery -A app.core.celery_app worker --loglevel=info -B
     volumes:
-      - ./backend:/app
+      - uploads:/data/uploads
     depends_on:
       postgres:
         condition: service_healthy
@@ -138,3 +145,4 @@ services:
 volumes:
   pgdata:
   chromadata:
+  uploads:

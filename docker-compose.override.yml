@@ -1,0 +1,18 @@
+# Development overrides — auto-merged by `docker compose up` on top of
+# docker-compose.yml. This is what makes local dev ergonomic (P1.5):
+#   - the backend runs `uvicorn --reload` instead of the image's gunicorn default
+#   - both backend and worker bind-mount ./backend so code edits are live
+#     (the worker still needs a restart to pick up changes — Celery has no reload)
+#
+# Production does NOT use this file: run the prod stack with an explicit file list,
+# e.g. `docker compose -f docker-compose.prod.yml up -d`, which never merges this.
+
+services:
+  backend:
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./backend:/app
+
+  worker:
+    volumes:
+      - ./backend:/app

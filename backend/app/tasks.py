@@ -14,9 +14,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 
 from app.core.celery_app import celery_app
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,22 @@ def _get_loop() -> asyncio.AbstractEventLoop:
         _loop = asyncio.new_event_loop()
         asyncio.set_event_loop(_loop)
     return _loop
+
+
+# Heavy ingestion models live in the WORKER, not the API (P1.6). Imports are lazy
+# so importing app.tasks (which the API does) never pulls in torch/sentence-transformers.
+@lru_cache
+def _chunker():
+    from app.rag.ingestion.chunker import SemanticChunker
+
+    return SemanticChunker()
+
+
+@lru_cache
+def _embedder():
+    from app.rag.ingestion.embedder import Embedder
+
+    return Embedder()
 
 
 async def _set_status(brief_id: uuid.UUID, **fields: object) -> None:
@@ -55,13 +73,22 @@ async def _run_pipeline(brief_id_str: str, document_ids: list[str] | None) -> No
         brief = await session.get(Brief, brief_id)
         if brief is None:
             raise ValueError(f"brief {brief_id} not found")
+        # Idempotency (P1.2): a re-delivered task (acks_late) for an already-finished
+        # brief must not re-run the (billable) pipeline.
+        if brief.status in (BriefStatus.complete, BriefStatus.failed):
+            logger.info("generate_brief_task: brief %s already %s; skipping", brief_id, brief.status.value)
+            return
         query = brief.query
         brief.status = BriefStatus.processing
+        brief.processing_started_at = datetime.now(timezone.utc)
         await session.commit()
 
     try:
-        state = await briefr_graph.ainvoke(
-            {"query": query, "document_ids": document_ids or None}
+        # Hard timeout inside the loop (P1.2) — SIGALRM soft limits are unreliable
+        # on Windows + run_until_complete, so bound the pipeline here instead.
+        state = await asyncio.wait_for(
+            briefr_graph.ainvoke({"query": query, "document_ids": document_ids or None}),
+            timeout=settings.brief_timeout_seconds,
         )
         result = state["brief"].model_dump(mode="json")
         # Retain the generation contexts so /eval can run RAGAS later.
@@ -82,6 +109,13 @@ async def _run_pipeline(brief_id_str: str, document_ids: list[str] | None) -> No
                 )
             await session.commit()
         logger.info("generate_brief_task: brief %s complete", brief_id)
+    except asyncio.TimeoutError:
+        logger.error("generate_brief_task: brief %s timed out after %ds", brief_id, settings.brief_timeout_seconds)
+        await _set_status(
+            brief_id,
+            status=BriefStatus.failed,
+            result={"error": f"generation timed out after {settings.brief_timeout_seconds}s"},
+        )
     except Exception as exc:
         logger.exception("generate_brief_task: brief %s failed", brief_id)
         await _set_status(
@@ -89,6 +123,196 @@ async def _run_pipeline(brief_id_str: str, document_ids: list[str] | None) -> No
         )
 
 
-@celery_app.task(name="app.tasks.generate_brief_task")
+@celery_app.task(
+    name="app.tasks.generate_brief_task",
+    # Pipeline-level failures are caught in _run_pipeline (the brief is marked
+    # failed). Only infra errors that escape it (e.g. DB unreachable during the
+    # acquire/idempotency phase) propagate here and get a bounded, backed-off retry.
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_backoff_max=60,
+    max_retries=settings.brief_max_retries,
+)
 def generate_brief_task(brief_id: str, document_ids: list[str] | None = None) -> None:
     _get_loop().run_until_complete(_run_pipeline(brief_id, document_ids))
+
+
+# --------------------------------------------------------------------------- #
+# Document ingestion (P1.6/P1.3/P1.4) — moved off the API request path.
+# --------------------------------------------------------------------------- #
+async def _set_doc_status(doc_id: uuid.UUID, **fields: object) -> None:
+    from app.core.database import AsyncSessionLocal
+    from app.models import Document
+
+    async with AsyncSessionLocal() as session:
+        doc = await session.get(Document, doc_id)
+        if doc is None:
+            return
+        for key, value in fields.items():
+            setattr(doc, key, value)
+        await session.commit()
+
+
+async def _run_ingest(doc_id_str: str, file_path_str: str, source_type_value: str) -> None:
+    from pathlib import Path
+
+    from app.core.database import AsyncSessionLocal
+    from app.models import Document, DocumentStatus, SourceType
+    from app.rag.ingestion.loaders import DocxLoader, PDFLoader
+    from app.rag.retrieval.bm25_index import rebuild_bm25_locked
+    from app.rag.retrieval.vector_store import VectorStore
+
+    doc_id = uuid.UUID(doc_id_str)
+    source_type = SourceType(source_type_value)
+    file_path = Path(file_path_str)
+    vector_store = VectorStore()
+
+    try:
+        await _set_doc_status(doc_id, status=DocumentStatus.processing)
+
+        async def _ingest_core() -> int:
+            loader = (
+                PDFLoader(file_path) if source_type is SourceType.pdf else DocxLoader(file_path)
+            )
+            blocks = await loader.load()
+            if not blocks:
+                raise ValueError("no extractable text in document")
+            chunks = await asyncio.to_thread(_chunker().chunk_blocks, blocks)
+            embeddings = await _embedder().embed_batch([c["content"] for c in chunks])
+
+            await vector_store.upsert_chunks(
+                [
+                    {
+                        "id": f"{doc_id_str}::{c['metadata']['chunk_index']}",
+                        "content": c["content"],
+                        "embedding": embeddings[i],
+                        "metadata": {**c["metadata"], "document_id": doc_id_str},
+                    }
+                    for i, c in enumerate(chunks)
+                ]
+            )
+            await rebuild_bm25_locked()
+
+            async with AsyncSessionLocal() as session:
+                doc = await session.get(Document, doc_id)
+                if doc is None:
+                    # Row deleted mid-ingest — drop the vectors we just wrote.
+                    await vector_store.delete_document_chunks(doc_id_str)
+                    await rebuild_bm25_locked()
+                    return 0
+                doc.content = "\n\n".join(b["content"] for b in blocks)
+                doc.num_chunks = len(chunks)
+                doc.status = DocumentStatus.ready
+                doc.error = None
+                await session.commit()
+            return len(chunks)
+
+        n = await asyncio.wait_for(_ingest_core(), timeout=settings.ingest_timeout_seconds)
+        logger.info("ingest_document_task: %s ready (%d chunks)", doc_id, n)
+    except Exception as exc:  # noqa: BLE001 -- record + compensate, never crash the worker
+        logger.exception("ingest_document_task: %s failed", doc_id)
+        # Compensate: remove any partial vectors so PG (the source of truth) and
+        # Chroma stay reconcilable (P1.4), then flag the row failed.
+        try:
+            await vector_store.delete_document_chunks(doc_id_str)
+            await rebuild_bm25_locked()
+        except Exception:  # noqa: BLE001
+            logger.exception("ingest_document_task: cleanup failed for %s", doc_id)
+        from app.models import DocumentStatus
+
+        await _set_doc_status(doc_id, status=DocumentStatus.failed, error=str(exc)[:1000])
+    finally:
+        file_path.unlink(missing_ok=True)
+
+
+@celery_app.task(name="app.tasks.ingest_document_task")
+def ingest_document_task(doc_id: str, file_path: str, source_type: str) -> None:
+    _get_loop().run_until_complete(_run_ingest(doc_id, file_path, source_type))
+
+
+async def _run_reconcile() -> None:
+    """Purge orphaned Chroma vectors and fail documents stuck mid-ingest (P1.4)."""
+    from sqlalchemy import select
+
+    from app.core.database import AsyncSessionLocal
+    from app.models import Document, DocumentStatus
+    from app.rag.retrieval.bm25_index import rebuild_bm25_locked
+    from app.rag.retrieval.vector_store import VectorStore
+
+    vector_store = VectorStore()
+    _, _, metas = await vector_store.fetch_corpus()
+    chroma_doc_ids = {m.get("document_id") for m in metas if m.get("document_id")}
+
+    deadline = datetime.now(timezone.utc) - timedelta(seconds=settings.ingest_timeout_seconds * 2)
+    async with AsyncSessionLocal() as session:
+        pg_ids = {
+            str(r) for r in (await session.execute(select(Document.id))).scalars().all()
+        }
+        stuck = (
+            await session.execute(
+                select(Document).where(
+                    Document.status.in_((DocumentStatus.pending, DocumentStatus.processing)),
+                    Document.created_at < deadline,
+                )
+            )
+        ).scalars().all()
+        for doc in stuck:
+            doc.status = DocumentStatus.failed
+            doc.error = "ingestion did not complete (worker lost or timed out)"
+        await session.commit()
+
+    orphans = [did for did in chroma_doc_ids if did not in pg_ids]
+    for did in orphans:
+        await vector_store.delete_document_chunks(did)
+    if orphans:
+        await rebuild_bm25_locked()
+    logger.info(
+        "reconcile_storage_task: %d orphan doc(s) purged, %d stuck doc(s) failed",
+        len(orphans),
+        len(stuck),
+    )
+
+
+@celery_app.task(name="app.tasks.reconcile_storage_task")
+def reconcile_storage_task() -> None:
+    _get_loop().run_until_complete(_run_reconcile())
+
+
+async def _run_sweep_stuck_briefs() -> None:
+    """Fail briefs stranded mid-generation so the frontend stops polling (P1.2)."""
+    from sqlalchemy import or_, select
+
+    from app.core.database import AsyncSessionLocal
+    from app.models import Brief, BriefStatus
+
+    now = datetime.now(timezone.utc)
+    processing_deadline = now - timedelta(seconds=settings.brief_stuck_seconds)
+    pending_deadline = now - timedelta(seconds=settings.brief_stuck_seconds)
+
+    async with AsyncSessionLocal() as session:
+        stuck = (
+            await session.execute(
+                select(Brief).where(
+                    or_(
+                        # Picked up but never finished (worker crash / lost task).
+                        (Brief.status == BriefStatus.processing)
+                        & (Brief.processing_started_at < processing_deadline),
+                        # Enqueued but never picked up.
+                        (Brief.status == BriefStatus.pending)
+                        & (Brief.created_at < pending_deadline),
+                    )
+                )
+            )
+        ).scalars().all()
+        for brief in stuck:
+            brief.status = BriefStatus.failed
+            brief.result = {"error": "generation stalled (worker lost); failed by sweeper"}
+            brief.completed_at = now
+        await session.commit()
+    if stuck:
+        logger.warning("sweep_stuck_briefs_task: failed %d stuck brief(s)", len(stuck))
+
+
+@celery_app.task(name="app.tasks.sweep_stuck_briefs_task")
+def sweep_stuck_briefs_task() -> None:
+    _get_loop().run_until_complete(_run_sweep_stuck_briefs())

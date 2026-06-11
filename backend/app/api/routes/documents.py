@@ -1,12 +1,16 @@
-"""Document endpoints: upload (ingest -> chunk -> embed -> Chroma), list, delete."""
+"""Document endpoints: upload (stage + enqueue async ingestion), list, delete.
+
+Ingestion (load -> chunk -> embed -> Chroma -> BM25) runs in a Celery worker
+(P1.6/P1.3/P1.4), so the API process stays light and an upload returns as soon as
+the file is validated and staged. The document's ``status`` reflects ingestion
+progress (pending -> processing -> ready/failed).
+"""
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import tempfile
 import uuid
-from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.models import Document, SourceType
-from app.rag.ingestion.chunker import SemanticChunker
-from app.rag.ingestion.embedder import Embedder
-from app.rag.ingestion.loaders import DocxLoader, PDFLoader
-from app.rag.retrieval.bm25_index import BM25Index
+from app.models import Document, DocumentStatus, SourceType
+from app.rag.retrieval.bm25_index import rebuild_bm25_locked
 from app.rag.retrieval.vector_store import VectorStore
+from app.tasks import ingest_document_task
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +41,18 @@ _MAGIC_BYTES = {
 _UPLOAD_CHUNK = 1024 * 1024  # 1 MiB read granularity while streaming to disk
 
 
-async def _persist_upload(file: UploadFile, suffix: str, source_type: SourceType) -> Path:
-    """Stream the upload to a temp file, enforcing size + content-type (P0.4).
+def _upload_dir() -> Path:
+    """Directory where uploads are staged for the ingestion worker (P1.6).
+
+    Must be shared between the API and worker (a named volume in compose). Falls
+    back to a per-host temp dir when unset (fine when both run on one host)."""
+    base = Path(settings.upload_dir) if settings.upload_dir else Path(tempfile.gettempdir()) / "briefr-uploads"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+async def _persist_upload(file: UploadFile, dest: Path, source_type: SourceType) -> None:
+    """Stream the upload to ``dest``, enforcing size + content-type (P0.4).
 
     Reads in bounded chunks so an oversized body is rejected mid-stream instead
     of being buffered whole in memory, and verifies the leading magic bytes so a
@@ -50,10 +62,8 @@ async def _persist_upload(file: UploadFile, suffix: str, source_type: SourceType
     magic = _MAGIC_BYTES[source_type]
     total = 0
     head = b""
-    tmp_path: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp_path = Path(tmp.name)
+        with dest.open("wb") as out:
             while chunk := await file.read(_UPLOAD_CHUNK):
                 total += len(chunk)
                 if max_bytes and total > max_bytes:
@@ -63,7 +73,7 @@ async def _persist_upload(file: UploadFile, suffix: str, source_type: SourceType
                     )
                 if len(head) < len(magic):
                     head += chunk[: len(magic) - len(head)]
-                tmp.write(chunk)
+                out.write(chunk)
         if total == 0:
             raise HTTPException(status_code=400, detail="empty file")
         if not head.startswith(magic):
@@ -71,29 +81,12 @@ async def _persist_upload(file: UploadFile, suffix: str, source_type: SourceType
                 status_code=400,
                 detail=f"file content does not match a valid {source_type.value.upper()}",
             )
-        return tmp_path
     except BaseException:
-        if tmp_path is not None:
-            tmp_path.unlink(missing_ok=True)
+        dest.unlink(missing_ok=True)
         raise
 
 
-@lru_cache
-def _chunker() -> SemanticChunker:
-    return SemanticChunker()
-
-
-@lru_cache
-def _embedder() -> Embedder:
-    return Embedder()
-
-
-async def _rebuild_bm25(vector_store: VectorStore) -> None:
-    ids, docs, metas = await vector_store.fetch_corpus()
-    await BM25Index().build_index(ids, docs, metas)
-
-
-@router.post("/upload", status_code=201)
+@router.post("/upload", status_code=202)
 async def upload_document(
     request: Request,
     file: UploadFile = File(...),
@@ -105,8 +98,7 @@ async def upload_document(
     if source_type is None:
         raise HTTPException(status_code=400, detail=f"unsupported file type '{suffix}' (PDF/DOCX only)")
 
-    # Cheap fast-path reject using the declared body size before reading anything
-    # (the streaming loop in _persist_upload is the authoritative cap).
+    # Cheap fast-path reject using the declared body size before reading anything.
     declared = request.headers.get("content-length")
     if declared and settings.max_upload_bytes and int(declared) > settings.max_upload_bytes:
         raise HTTPException(
@@ -114,48 +106,22 @@ async def upload_document(
             detail=f"file exceeds maximum size of {settings.max_upload_bytes} bytes",
         )
 
-    tmp_path = await _persist_upload(file, suffix, source_type)
-    try:
-        loader = PDFLoader(tmp_path) if source_type is SourceType.pdf else DocxLoader(tmp_path)
-        try:
-            blocks = await loader.load()
-        except ValueError as exc:
-            # Raised by the loaders for caps/limits (e.g. PDF page count).
-            raise HTTPException(status_code=413, detail=str(exc)) from exc
-        if not blocks:
-            raise HTTPException(status_code=400, detail="no extractable text in document")
+    doc_id = uuid.uuid4()
+    dest = _upload_dir() / f"{doc_id}{suffix}"
+    await _persist_upload(file, dest, source_type)
 
-        chunks = await asyncio.to_thread(_chunker().chunk_blocks, blocks)
-        embeddings = await _embedder().embed_batch([c["content"] for c in chunks])
+    document = Document(id=doc_id, name=filename, source_type=source_type, status=DocumentStatus.pending)
+    db.add(document)
+    await db.commit()
 
-        document = Document(
-            name=filename,
-            source_type=source_type,
-            content="\n\n".join(b["content"] for b in blocks),
-        )
-        db.add(document)
-        await db.flush()
-        doc_id = str(document.id)
-
-        vector_store = VectorStore()
-        await vector_store.upsert_chunks(
-            [
-                {
-                    "id": f"{doc_id}::{c['metadata']['chunk_index']}",
-                    "content": c["content"],
-                    "embedding": embeddings[i],
-                    "metadata": {**c["metadata"], "document_id": doc_id, "source": filename},
-                }
-                for i, c in enumerate(chunks)
-            ]
-        )
-        await _rebuild_bm25(vector_store)
-        await db.commit()
-    finally:
-        tmp_path.unlink(missing_ok=True)
-
-    logger.info("upload_document: %s -> %s (%d chunks)", filename, doc_id, len(chunks))
-    return {"document_id": doc_id, "name": filename, "source_type": source_type.value, "num_chunks": len(chunks)}
+    ingest_document_task.delay(str(doc_id), str(dest), source_type.value)
+    logger.info("upload_document: %s staged -> %s (enqueued ingestion)", filename, doc_id)
+    return {
+        "document_id": str(doc_id),
+        "name": filename,
+        "source_type": source_type.value,
+        "status": DocumentStatus.pending.value,
+    }
 
 
 @router.get("")
@@ -166,6 +132,9 @@ async def list_documents(db: AsyncSession = Depends(get_db)) -> list[dict[str, A
             "document_id": str(d.id),
             "name": d.name,
             "source_type": d.source_type.value,
+            "status": d.status.value,
+            "num_chunks": d.num_chunks,
+            "error": d.error,
             "created_at": d.created_at.isoformat(),
         }
         for d in rows
@@ -179,9 +148,11 @@ async def delete_document(document_id: uuid.UUID, db: AsyncSession = Depends(get
     document = await db.get(Document, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="document not found")
-    vector_store = VectorStore()
-    await vector_store.delete_document_chunks(str(document_id))
-    await _rebuild_bm25(vector_store)
+    await VectorStore().delete_document_chunks(str(document_id))
+    await rebuild_bm25_locked()
     await db.delete(document)
     await db.commit()
+    # Remove any staged upload file that ingestion didn't clean up (pending/failed docs).
+    for stale in _upload_dir().glob(f"{document_id}.*"):
+        stale.unlink(missing_ok=True)
     logger.info("delete_document: %s removed", document_id)

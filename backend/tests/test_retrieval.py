@@ -37,8 +37,17 @@ class StubBM25:
     def __init__(self, hits_factory) -> None:
         self._hits_factory = hits_factory
 
-    async def search(self, query: str, top_k: int | None = None) -> list[ScoredChunk]:
-        return self._hits_factory()
+    async def search(
+        self,
+        query: str,
+        top_k: int | None = None,
+        filter_doc_ids: Iterable[str] | None = None,
+    ) -> list[ScoredChunk]:
+        hits = self._hits_factory()
+        if filter_doc_ids is not None:
+            allowed = set(filter_doc_ids)
+            hits = [c for c in hits if c.metadata.get("document_id") in allowed]
+        return hits
 
 
 def _vector_hits() -> list[ScoredChunk]:
@@ -136,6 +145,89 @@ async def test_cross_encoder_reranker_changes_ordering(monkeypatch) -> None:
     assert [c.chunk_id for c in ranked] == ["long", "medium"]  # reordered + top_k cut
     assert all(c.rerank_score is not None for c in ranked)
     assert ranked[0].score == ranked[0].rerank_score
+
+
+class _FakeRedis:
+    """Minimal async Redis stand-in for the BM25 corpus + version keys."""
+
+    def __init__(self) -> None:
+        self.store: dict[str, Any] = {}
+
+    async def get(self, key: str) -> Any:
+        return self.store.get(key)
+
+    async def set(self, key: str, value: Any) -> None:
+        self.store[key] = value
+
+    async def incr(self, key: str) -> int:
+        self.store[key] = int(self.store.get(key, 0)) + 1
+        return self.store[key]
+
+
+def _bare_bm25(redis: _FakeRedis) -> BM25Index:
+    index = BM25Index.__new__(BM25Index)
+    index._redis = redis
+    index._bm25 = None
+    index._ids, index._texts, index._metadatas = [], [], []
+    index._version = -1
+    return index
+
+
+async def test_bm25_index_reloads_when_corpus_version_advances() -> None:
+    # P1.1: a long-lived instance must pick up a corpus rebuilt by another process.
+    # Filler docs keep the matching docs a minority so BM25 IDF stays > 0 in both
+    # states (IDF crosses zero at document-frequency 0.5).
+    fillers = ["photosynthesis happens in plants", "the rain in spain", "random unrelated note"]
+    redis = _FakeRedis()
+    worker_index = _bare_bm25(redis)
+    await worker_index.build_index(
+        ["c1", "f1", "f2"],
+        ["anthropic builds the claude language models", fillers[0], fillers[1]],
+        [{"document_id": "d1"}, {"document_id": "d0"}, {"document_id": "d0"}],
+    )
+    assert {h.chunk_id for h in await worker_index.search("anthropic claude")} == {"c1"}
+
+    # A second instance sharing the same Redis ingests a new doc (bumps the version).
+    other_process = _bare_bm25(redis)
+    await other_process.build_index(
+        ["c1", "f1", "f2", "f3", "c2"],
+        [
+            "anthropic builds the claude language models",
+            fillers[0],
+            fillers[1],
+            fillers[2],
+            "claude is a large language model by anthropic",
+        ],
+        [{"document_id": d} for d in ("d1", "d0", "d0", "d0", "d2")],
+    )
+
+    # The long-lived instance still holds its stale in-memory index, but the next
+    # search detects the advanced version and reloads to include c2.
+    hits = await worker_index.search("anthropic claude")
+    assert {h.chunk_id for h in hits} == {"c1", "c2"}
+
+
+async def test_bm25_index_scoped_search_is_lossless() -> None:
+    # P1.7: a scoped doc's chunk must be returned even when it ranks below the
+    # global top_k — filtering happens before truncation, not after.
+    index = _bare_bm25(_FakeRedis())
+    await index.build_index(
+        ["cd1", "cd2", "f1", "f2", "f3"],
+        [
+            "claude claude claude",      # d1: highest TF -> global #1
+            "claude once today",          # d2: lower TF -> below global top_k=1
+            "photosynthesis plants",
+            "rain in spain",
+            "random note here",
+        ],
+        [{"document_id": d} for d in ("d1", "d2", "d0", "d0", "d0")],
+    )
+
+    # Unscoped top_k=1 surfaces only the strongest chunk (d1); d2 is left out.
+    assert {h.chunk_id for h in await index.search("claude", top_k=1)} == {"cd1"}
+    # Scoping to d2 still returns its chunk — not lost to the global truncation.
+    scoped = await index.search("claude", top_k=1, filter_doc_ids=["d2"])
+    assert {h.chunk_id for h in scoped} == {"cd2"}
 
 
 async def test_bm25_index_search_ranks_matching_documents() -> None:

@@ -68,6 +68,26 @@ class Settings(BaseSettings):
     max_upload_bytes: int = 10 * 1024 * 1024  # 10 MiB
     max_pdf_pages: int = 200
 
+    # --- Async ingestion (P1.6/P1.3) ---
+    # Directory where the API stages uploaded files for the Celery ingestion
+    # worker to read. Must be shared between the API and worker (a named volume
+    # in compose). Empty => a per-host temp dir (fine when both run on one host).
+    upload_dir: str = ""
+    # Hard ceiling on a single ingestion run, enforced inside the task.
+    ingest_timeout_seconds: int = 300
+    # How often the reconcile sweeper purges orphaned vectors / fails stuck docs.
+    reconcile_interval_seconds: int = 600
+
+    # --- Celery task safety (P1.2) ---
+    # Hard ceiling on a single brief pipeline, enforced inside the task via
+    # asyncio.wait_for (SIGALRM soft limits are unreliable on Windows). Briefs
+    # left in 'processing' past brief_stuck_seconds are failed by a sweeper.
+    brief_timeout_seconds: int = 600
+    brief_stuck_seconds: int = 1200
+    brief_max_retries: int = 2
+    # How often the stuck-brief sweeper runs.
+    brief_sweep_interval_seconds: int = 300
+
     # --- Vector store (ChromaDB, server mode) ---
     # Local-dev default targets the host-published port (8001 -> container 8000).
     # In compose the backend overrides chroma_host=chroma, chroma_port=8000.

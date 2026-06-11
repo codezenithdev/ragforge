@@ -26,5 +26,7 @@ CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')"
 COPY . .
 
 EXPOSE 8000
-# --reload pairs with the compose bind-mount of ./backend for live development.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Production-safe default (P1.5): gunicorn with uvicorn workers, no file watcher,
+# multi-process. The dev compose override swaps this for `uvicorn --reload`.
+CMD ["gunicorn", "app.main:app", "-k", "uvicorn.workers.UvicornWorker", \
+     "-w", "4", "-b", "0.0.0.0:8000"]

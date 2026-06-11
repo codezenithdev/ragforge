@@ -43,7 +43,8 @@ function DocumentList({
             id={`doc-${doc.document_id}`}
             checked={selected.includes(doc.document_id)}
             onChange={() => onToggle(doc.document_id)}
-            className="h-4 w-4 accent-teal-700"
+            disabled={doc.status !== undefined && doc.status !== "ready"}
+            className="h-4 w-4 accent-teal-700 disabled:opacity-40"
           />
           <FileText className="h-4 w-4 shrink-0 text-slate-400" />
           <label
@@ -53,6 +54,13 @@ function DocumentList({
           >
             {doc.name}
           </label>
+          {doc.status === "pending" || doc.status === "processing" ? (
+            <span className="shrink-0 text-xs text-slate-400">indexing…</span>
+          ) : doc.status === "failed" ? (
+            <span className="shrink-0 text-xs text-red-600" title={doc.error ?? undefined}>
+              failed
+            </span>
+          ) : null}
           <Button
             size="icon"
             variant="destructive"
