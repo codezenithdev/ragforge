@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import sys
 import types
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from app.rag.retrieval.bm25_index import BM25Index
 from app.rag.retrieval.hybrid import HybridRetriever

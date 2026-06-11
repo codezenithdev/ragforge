@@ -10,7 +10,8 @@ delete-by-document. Cosine *distance* from Chroma is converted to a similarity
 from __future__ import annotations
 
 import logging
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 from app.core.config import settings
 from app.core.vector_db import get_or_create_collection
@@ -75,7 +76,7 @@ class VectorStore:
         distances = (result.get("distances") or [[]])[0]
 
         chunks: list[ScoredChunk] = []
-        for cid, doc, md, dist in zip(ids, documents, metadatas, distances):
+        for cid, doc, md, dist in zip(ids, documents, metadatas, distances, strict=False):
             similarity = 1.0 - float(dist)
             chunks.append(
                 ScoredChunk(
@@ -124,7 +125,7 @@ class VectorStore:
         result = await collection.get(ids=ids, include=["documents"])
         got_ids = result.get("ids") or []
         documents = result.get("documents") or []
-        return {cid: doc or "" for cid, doc in zip(got_ids, documents)}
+        return {cid: doc or "" for cid, doc in zip(got_ids, documents, strict=False)}
 
     async def delete_document_chunks(self, document_id: str) -> None:
         collection = await self._get_collection()

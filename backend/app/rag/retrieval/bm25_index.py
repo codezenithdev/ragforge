@@ -11,7 +11,8 @@ import asyncio
 import logging
 import pickle
 import time
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 import redis.asyncio as aioredis
 from rank_bm25 import BM25Okapi

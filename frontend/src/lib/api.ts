@@ -3,15 +3,22 @@
  * schemas (BriefOutput etc.) and route serializers.
  */
 
+// Runtime config (P3.4): an operator can override the API URL/key at deploy time
+// without rebuilding the bundle by setting `window.__BRIEFR_CONFIG__` (e.g. from a
+// small /config.js served next to the app). Falls back to the build-time env var.
+const runtimeConfig: { apiUrl?: string; apiKey?: string } =
+  (window as unknown as { __BRIEFR_CONFIG__?: { apiUrl?: string; apiKey?: string } })
+    .__BRIEFR_CONFIG__ ?? {};
+
 const API_URL: string =
+  runtimeConfig.apiUrl ??
   (import.meta.env.VITE_API_URL as string | undefined) ??
   "http://localhost:8000/api/v1";
 
 // Sent as the X-API-Key header on every request when configured (P0.1). Unset
 // in local dev, where the backend leaves auth disabled.
-const API_KEY: string | undefined = import.meta.env.VITE_API_KEY as
-  | string
-  | undefined;
+const API_KEY: string | undefined =
+  runtimeConfig.apiKey ?? (import.meta.env.VITE_API_KEY as string | undefined);
 
 /** Merge the configured API key header into a request's headers, if any. */
 function withAuth(headers?: HeadersInit): HeadersInit | undefined {

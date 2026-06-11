@@ -93,7 +93,7 @@ class RAGASRunner:
         return {
             k: float(v)
             for k, v in row.items()
-            if isinstance(v, (int, float)) and not isinstance(v, bool)
+            if isinstance(v, int | float) and not isinstance(v, bool)
         }
 
     async def evaluate(

@@ -107,6 +107,9 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
     embedding_batch_size: int = 100
+    # Truncate any single text longer than this before embedding (P3.4) — keeps it
+    # under the model's ~8191-token limit (≈4 chars/token).
+    embedding_max_chars: int = 30000
 
     # --- Cross-encoder re-ranker ---
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"

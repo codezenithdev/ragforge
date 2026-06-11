@@ -39,6 +39,19 @@ class Embedder:
         self.batch_size = batch_size or settings.embedding_batch_size
 
     @staticmethod
+    def _sanitize(text: str) -> str:
+        """Guard inputs before embedding (P3.4): the API rejects empty strings, and
+        a single text over the model's token limit errors. Replace empty/whitespace
+        with a space (keeps output alignment with input) and truncate over-long text."""
+        text = text or ""
+        if not text.strip():
+            return " "
+        max_chars = settings.embedding_max_chars
+        if max_chars and len(text) > max_chars:
+            return text[:max_chars]
+        return text
+
+    @staticmethod
     def _normalize(vector: list[float]) -> list[float]:
         arr = np.asarray(vector, dtype=np.float32)
         norm = float(np.linalg.norm(arr))
@@ -60,6 +73,7 @@ class Embedder:
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        texts = [self._sanitize(t) for t in texts]
         vectors: list[list[float]] = []
         for start in range(0, len(texts), self.batch_size):
             batch = texts[start : start + self.batch_size]

@@ -10,8 +10,9 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,8 +22,9 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from sqlalchemy import text
 
-import app.models  # noqa: F401  -- register ORM models on Base.metadata
-from app.api.routes import briefs, documents, eval as eval_routes
+from app import models  # noqa: F401  -- register ORM models on Base.metadata
+from app.api.routes import briefs, documents
+from app.api.routes import eval as eval_routes
 from app.core.config import settings
 from app.core.database import engine
 from app.core.logging import configure_logging, request_id_var

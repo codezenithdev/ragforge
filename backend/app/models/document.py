@@ -12,7 +12,8 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum as SAEnum, Integer, String, Text, func
+from sqlalchemy import DateTime, Integer, String, Text, func
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 

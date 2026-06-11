@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from functools import lru_cache
 
 from app.core.celery_app import celery_app
@@ -81,7 +81,7 @@ async def _run_pipeline(brief_id_str: str, document_ids: list[str] | None) -> No
             return
         query = brief.query
         brief.status = BriefStatus.processing
-        brief.processing_started_at = datetime.now(timezone.utc)
+        brief.processing_started_at = datetime.now(UTC)
         await session.commit()
 
     try:
@@ -109,16 +109,16 @@ async def _run_pipeline(brief_id_str: str, document_ids: list[str] | None) -> No
             brief.result = result
             brief.faithfulness_scores = state.get("faithfulness_scores") or {}
             brief.status = BriefStatus.complete
-            brief.completed_at = datetime.now(timezone.utc)
+            brief.completed_at = datetime.now(UTC)
             for sub_query, hyde in zip(
-                state.get("sub_queries", []), state.get("hyde_documents", [])
+                state.get("sub_queries", []), state.get("hyde_documents", []), strict=False
             ):
                 session.add(
                     BriefSubQuery(brief_id=brief_id, sub_query=sub_query, hyde_document=hyde)
                 )
             await session.commit()
         logger.info("generate_brief_task: brief %s complete", brief_id)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         logger.error("generate_brief_task: brief %s timed out after %ds", brief_id, settings.brief_timeout_seconds)
         await _set_status(
             brief_id,
@@ -258,7 +258,7 @@ async def _run_reconcile() -> None:
     _, _, metas = await vector_store.fetch_corpus()
     chroma_doc_ids = {m.get("document_id") for m in metas if m.get("document_id")}
 
-    deadline = datetime.now(timezone.utc) - timedelta(seconds=settings.ingest_timeout_seconds * 2)
+    deadline = datetime.now(UTC) - timedelta(seconds=settings.ingest_timeout_seconds * 2)
     async with AsyncSessionLocal() as session:
         pg_ids = {
             str(r) for r in (await session.execute(select(Document.id))).scalars().all()
@@ -302,7 +302,7 @@ async def _run_prune_briefs() -> None:
     from app.core.database import AsyncSessionLocal
     from app.models import Brief
 
-    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.brief_retention_days)
+    cutoff = datetime.now(UTC) - timedelta(days=settings.brief_retention_days)
     async with AsyncSessionLocal() as session:
         result = await session.execute(delete(Brief).where(Brief.created_at < cutoff))
         await session.commit()
@@ -325,7 +325,7 @@ async def _run_sweep_stuck_briefs() -> None:
     from app.core.database import AsyncSessionLocal
     from app.models import Brief, BriefStatus
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     processing_deadline = now - timedelta(seconds=settings.brief_stuck_seconds)
     pending_deadline = now - timedelta(seconds=settings.brief_stuck_seconds)
 

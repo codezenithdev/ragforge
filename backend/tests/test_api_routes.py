@@ -7,7 +7,6 @@ enabled by setting ``settings.api_key`` for the duration of each test.
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import AsyncIterator
 
 import pytest
@@ -28,7 +27,7 @@ class _FakeResult:
     def __init__(self, items: list) -> None:
         self._items = items
 
-    def scalars(self) -> "_FakeResult":
+    def scalars(self) -> _FakeResult:
         return self
 
     def all(self) -> list:

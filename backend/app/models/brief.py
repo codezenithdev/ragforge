@@ -14,8 +14,10 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Text, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
+from sqlalchemy import DateTime, ForeignKey, Text, func
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base

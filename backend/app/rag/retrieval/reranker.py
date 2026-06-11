@@ -36,7 +36,7 @@ class CrossEncoderReranker:
         scores = self.model.predict(pairs)
         elapsed_ms = (time.perf_counter() - start) * 1000.0
 
-        for chunk, score in zip(chunks, scores):
+        for chunk, score in zip(chunks, scores, strict=False):
             chunk.rerank_score = float(score)
             chunk.score = float(score)
 

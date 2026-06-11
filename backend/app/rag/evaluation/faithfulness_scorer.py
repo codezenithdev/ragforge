@@ -88,7 +88,7 @@ class FaithfulnessScorer:
 
         result: dict[str, float] = {}
         low = []
-        for (key, section), score in zip(targets, scores):
+        for (key, section), score in zip(targets, scores, strict=False):
             section.confidence = score
             result[key] = score
             if score < self.warn_threshold:

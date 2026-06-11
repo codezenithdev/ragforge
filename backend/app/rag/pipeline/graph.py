@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
-from typing import Any, Optional, TypedDict
+from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
 
@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 class BriefState(TypedDict, total=False):
     query: str
-    document_ids: Optional[list[str]]
+    document_ids: list[str] | None
     sub_queries: list[str]
     hyde_documents: list[str]
     retrieved_chunks: list[ScoredChunk]
@@ -44,7 +44,7 @@ class BriefState(TypedDict, total=False):
     final_chunks: list[ScoredChunk]
     brief: BriefOutput
     faithfulness_scores: dict[str, float]
-    error: Optional[str]
+    error: str | None
 
 
 class PipelineComponents:

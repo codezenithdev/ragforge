@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -46,7 +46,7 @@ async def _enforce_brief_quota(db: AsyncSession) -> None:
             )
 
     if settings.daily_brief_limit:
-        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        day_start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
         today = await db.scalar(
             select(func.count()).select_from(Brief).where(Brief.created_at >= day_start)
         )

@@ -1,0 +1,23 @@
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["alembic/versions"]
+
+[tool.ruff.lint]
+# Pragmatic gate: pyflakes (F), a subset of pycodestyle (E/W), import sorting (I),
+# bugbear (B), and pyupgrade (UP). E501 (line length) is left off — long lines are
+# not worth a mass reflow of working code.
+select = ["E", "W", "F", "I", "B", "UP"]
+ignore = ["E501", "B008"]  # B008: FastAPI Depends()/File() in defaults is idiomatic
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011"]
+
+[tool.mypy]
+python_version = "3.11"
+# Lenient: a useful gate without drowning in third-party stub gaps. Tighten later.
+ignore_missing_imports = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = false
+exclude = ["alembic/", "tests/"]
