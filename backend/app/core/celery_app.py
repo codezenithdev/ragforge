@@ -10,8 +10,17 @@ outlive their loop.
 from __future__ import annotations
 
 from celery import Celery
+from celery.signals import setup_logging
 
 from app.core.config import settings
+
+
+@setup_logging.connect
+def _configure_worker_logging(**_kwargs: object) -> None:
+    """Use the same structured JSON logging in the worker as the API (P2.2)."""
+    from app.core.logging import configure_logging
+
+    configure_logging()
 
 celery_app = Celery(
     "briefr",
@@ -43,6 +52,11 @@ celery_app.conf.update(
         "sweep-stuck-briefs": {
             "task": "app.tasks.sweep_stuck_briefs_task",
             "schedule": float(settings.brief_sweep_interval_seconds),
+        },
+        # P2.3: prune briefs past the retention window (no-op unless configured).
+        "prune-old-briefs": {
+            "task": "app.tasks.prune_old_briefs_task",
+            "schedule": 86400.0,
         },
     },
 )

@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     rate_limit: str = "60/minute"
     max_concurrent_briefs: int = 5
     daily_brief_limit: int = 200
+    # How long an Idempotency-Key maps to its brief (P2.6); repeats within this
+    # window return the same brief instead of creating (and billing) a new one.
+    idempotency_ttl_seconds: int = 86400
 
     # --- Upload hardening (P0.4) ---
     # Reject uploads larger than this before reading them into memory, and cap
@@ -77,6 +80,8 @@ class Settings(BaseSettings):
     ingest_timeout_seconds: int = 300
     # How often the reconcile sweeper purges orphaned vectors / fails stuck docs.
     reconcile_interval_seconds: int = 600
+    # Delete briefs older than this many days (P2.3 retention). 0 disables pruning.
+    brief_retention_days: int = 0
 
     # --- Celery task safety (P1.2) ---
     # Hard ceiling on a single brief pipeline, enforced inside the task via

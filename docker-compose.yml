@@ -56,9 +56,22 @@ services:
       timeout: 5s
       retries: 12
 
-  # backend/frontend Dockerfiles are added in a later phase. The services are
-  # declared here per the project spec, but `docker compose up postgres redis
-  # chroma` only starts the infra services above, so this file is usable now.
+  # One-shot Alembic migration step (P2.1): the single schema authority. Runs to
+  # completion before backend/worker start; the app no longer calls create_all.
+  migrate:
+    build: ./backend
+    container_name: briefr-migrate
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://briefr:briefr@postgres:5432/briefr
+    command: alembic upgrade head
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend:
     build: ./backend
     container_name: briefr-backend
@@ -98,6 +111,8 @@ services:
         condition: service_healthy
       chroma:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   # Celery worker that runs the LangGraph brief pipeline. Reuses the backend
   # image; like backend, it only becomes startable once the Dockerfile lands.
@@ -126,6 +141,8 @@ services:
         condition: service_healthy
       chroma:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
     build:

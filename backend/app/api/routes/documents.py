@@ -14,12 +14,13 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.logging import request_id_var
 from app.models import Document, DocumentStatus, SourceType
 from app.rag.retrieval.bm25_index import rebuild_bm25_locked
 from app.rag.retrieval.vector_store import VectorStore
@@ -114,7 +115,9 @@ async def upload_document(
     db.add(document)
     await db.commit()
 
-    ingest_document_task.delay(str(doc_id), str(dest), source_type.value)
+    ingest_document_task.delay(
+        str(doc_id), str(dest), source_type.value, request_id=request_id_var.get()
+    )
     logger.info("upload_document: %s staged -> %s (enqueued ingestion)", filename, doc_id)
     return {
         "document_id": str(doc_id),
@@ -125,8 +128,16 @@ async def upload_document(
 
 
 @router.get("")
-async def list_documents(db: AsyncSession = Depends(get_db)) -> list[dict[str, Any]]:
-    rows = (await db.execute(select(Document).order_by(Document.created_at.desc()))).scalars().all()
+async def list_documents(
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> list[dict[str, Any]]:
+    rows = (
+        await db.execute(
+            select(Document).order_by(Document.created_at.desc()).limit(limit).offset(offset)
+        )
+    ).scalars().all()
     return [
         {
             "document_id": str(d.id),

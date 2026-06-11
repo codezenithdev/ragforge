@@ -6,6 +6,9 @@ __pycache__/
 # Celery beat scheduler state (generated when running the worker with -B)
 celerybeat-schedule*
 celerybeat.pid
+
+# Backup artifacts (scripts/backup.sh)
+backups/
 .eggs/
 .pytest_cache/
 .mypy_cache/

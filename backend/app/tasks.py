@@ -19,6 +19,7 @@ from functools import lru_cache
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
+from app.core.logging import request_id_var
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +92,16 @@ async def _run_pipeline(brief_id_str: str, document_ids: list[str] | None) -> No
             timeout=settings.brief_timeout_seconds,
         )
         result = state["brief"].model_dump(mode="json")
-        # Retain the generation contexts so /eval can run RAGAS later.
-        result["contexts"] = [c.content for c in state.get("final_chunks", [])]
+        # Store context *references* for /eval rather than duplicating full text
+        # (P2.3): document chunks live in Chroma (store id, rehydrate later); web
+        # chunks aren't in Chroma, so their text is kept inline (it's the only copy).
+        refs: list[dict[str, str]] = []
+        for c in state.get("final_chunks", []):
+            if c.metadata.get("source") == "web" or c.chunk_id.startswith("web::"):
+                refs.append({"id": c.chunk_id, "text": c.content})
+            else:
+                refs.append({"id": c.chunk_id})
+        result["context_refs"] = refs
         result["crag_action"] = state["crag_result"].action.value
 
         async with AsyncSessionLocal() as session:
@@ -133,7 +142,10 @@ async def _run_pipeline(brief_id_str: str, document_ids: list[str] | None) -> No
     retry_backoff_max=60,
     max_retries=settings.brief_max_retries,
 )
-def generate_brief_task(brief_id: str, document_ids: list[str] | None = None) -> None:
+def generate_brief_task(
+    brief_id: str, document_ids: list[str] | None = None, request_id: str = "-"
+) -> None:
+    request_id_var.set(request_id)  # correlate worker logs with the originating request
     _get_loop().run_until_complete(_run_pipeline(brief_id, document_ids))
 
 
@@ -200,7 +212,7 @@ async def _run_ingest(doc_id_str: str, file_path_str: str, source_type_value: st
                     await vector_store.delete_document_chunks(doc_id_str)
                     await rebuild_bm25_locked()
                     return 0
-                doc.content = "\n\n".join(b["content"] for b in blocks)
+                # Full text is NOT stored in PG (P2.3) — chunks live in Chroma.
                 doc.num_chunks = len(chunks)
                 doc.status = DocumentStatus.ready
                 doc.error = None
@@ -226,7 +238,10 @@ async def _run_ingest(doc_id_str: str, file_path_str: str, source_type_value: st
 
 
 @celery_app.task(name="app.tasks.ingest_document_task")
-def ingest_document_task(doc_id: str, file_path: str, source_type: str) -> None:
+def ingest_document_task(
+    doc_id: str, file_path: str, source_type: str, request_id: str = "-"
+) -> None:
+    request_id_var.set(request_id)
     _get_loop().run_until_complete(_run_ingest(doc_id, file_path, source_type))
 
 
@@ -276,6 +291,31 @@ async def _run_reconcile() -> None:
 @celery_app.task(name="app.tasks.reconcile_storage_task")
 def reconcile_storage_task() -> None:
     _get_loop().run_until_complete(_run_reconcile())
+
+
+async def _run_prune_briefs() -> None:
+    """Delete briefs older than the retention window (P2.3). No-op when disabled."""
+    if settings.brief_retention_days <= 0:
+        return
+    from sqlalchemy import delete
+
+    from app.core.database import AsyncSessionLocal
+    from app.models import Brief
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=settings.brief_retention_days)
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(delete(Brief).where(Brief.created_at < cutoff))
+        await session.commit()
+    logger.info(
+        "prune_old_briefs_task: deleted %s brief(s) older than %d days",
+        result.rowcount,
+        settings.brief_retention_days,
+    )
+
+
+@celery_app.task(name="app.tasks.prune_old_briefs_task")
+def prune_old_briefs_task() -> None:
+    _get_loop().run_until_complete(_run_prune_briefs())
 
 
 async def _run_sweep_stuck_briefs() -> None:

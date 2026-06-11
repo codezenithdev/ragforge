@@ -29,6 +29,29 @@ class EvalRunRequest(BaseModel):
     ground_truth: str | None = None
 
 
+async def _rehydrate_contexts(result: dict[str, Any]) -> list[str]:
+    """Reconstruct the generation contexts for evaluation (P2.3).
+
+    New briefs store ``context_refs`` (document-chunk ids + inline web text);
+    document text is fetched from Chroma by id. Falls back to the legacy
+    ``contexts`` field (full text) for briefs created before the redesign.
+    """
+    refs = result.get("context_refs")
+    if not refs:
+        return result.get("contexts") or []
+
+    from app.rag.retrieval.vector_store import VectorStore
+
+    need_ids = [r["id"] for r in refs if "text" not in r]
+    texts_by_id = await VectorStore().fetch_texts_by_ids(need_ids) if need_ids else {}
+    contexts: list[str] = []
+    for ref in refs:
+        text = ref.get("text") if "text" in ref else texts_by_id.get(ref["id"], "")
+        if text:
+            contexts.append(text)
+    return contexts
+
+
 @router.post("/run")
 async def run_eval(request: EvalRunRequest, db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
     brief = await db.get(Brief, uuid.UUID(request.brief_id))
@@ -38,7 +61,7 @@ async def run_eval(request: EvalRunRequest, db: AsyncSession = Depends(get_db)) 
         raise HTTPException(status_code=409, detail=f"brief is '{brief.status.value}', not complete")
 
     answer = (brief.result.get("executive_summary") or {}).get("content", "")
-    contexts = brief.result.get("contexts") or []
+    contexts = await _rehydrate_contexts(brief.result)
     if not answer or not contexts:
         raise HTTPException(status_code=409, detail="brief result lacks answer/contexts for evaluation")
 

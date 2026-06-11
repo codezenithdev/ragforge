@@ -44,7 +44,7 @@ class Brief(Base):
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     faithfulness_scores: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True), server_default=func.now(), nullable=False, index=True
     )
     # When the worker began processing — used by the stuck-brief sweeper (P1.2).
     processing_started_at: Mapped[datetime | None] = mapped_column(

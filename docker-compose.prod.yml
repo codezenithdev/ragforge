@@ -70,6 +70,24 @@ services:
       timeout: 5s
       retries: 12
 
+  # One-shot Alembic migration step (P2.1) — runs before backend/worker start.
+  migrate:
+    build: ./backend
+    container_name: briefr-migrate
+    environment:
+      ENVIRONMENT: production
+      API_KEY: ${API_KEY}
+      CORS_ORIGINS: ${CORS_ORIGINS}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?required}
+      TAVILY_API_KEY: ${TAVILY_API_KEY:?required}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-briefr}
+    command: alembic upgrade head
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   backend:
     build: ./backend
     container_name: briefr-backend
@@ -118,6 +136,8 @@ services:
         condition: service_healthy
       chroma:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     build: ./backend
@@ -147,6 +167,8 @@ services:
         condition: service_healthy
       chroma:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   frontend:
     build:

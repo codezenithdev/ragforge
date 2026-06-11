@@ -116,6 +116,16 @@ class VectorStore:
         logger.info("VectorStore: fetched corpus of %d chunks", len(ids))
         return ids, documents, metadatas
 
+    async def fetch_texts_by_ids(self, ids: list[str]) -> dict[str, str]:
+        """Return {chunk_id: text} for the given ids (P2.3 context rehydration)."""
+        if not ids:
+            return {}
+        collection = await self._get_collection()
+        result = await collection.get(ids=ids, include=["documents"])
+        got_ids = result.get("ids") or []
+        documents = result.get("documents") or []
+        return {cid: doc or "" for cid, doc in zip(got_ids, documents)}
+
     async def delete_document_chunks(self, document_id: str) -> None:
         collection = await self._get_collection()
         await collection.delete(where={"document_id": document_id})

@@ -7,6 +7,7 @@ enabled by setting ``settings.api_key`` for the duration of each test.
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import AsyncIterator
 
 import pytest
@@ -50,8 +51,26 @@ class _FakeSession:
     async def get(self, *_a, **_k):
         return None
 
-    def add(self, *_a, **_k) -> None:
-        pass
+    def add(self, obj: object = None, *_a, **_k) -> None:
+        # Simulate SQLAlchemy applying Python-side column defaults at flush time
+        # (PK uuid, status enum, num_chunks, ...) so post-commit reads work.
+        if obj is None:
+            return
+        try:
+            from sqlalchemy import inspect as sa_inspect
+
+            for col in sa_inspect(type(obj)).mapper.columns:
+                if getattr(obj, col.key, None) is not None or col.default is None:
+                    continue
+                value = col.default.arg
+                if callable(value):
+                    try:
+                        value = value()
+                    except TypeError:
+                        value = value(None)
+                setattr(obj, col.key, value)
+        except Exception:
+            pass
 
     async def commit(self) -> None:
         pass
@@ -128,6 +147,44 @@ async def test_create_brief_rejected_when_concurrency_cap_hit(client: AsyncClien
     assert "in flight" in resp.json()["detail"]
 
 
+class _FakeRedis:
+    def __init__(self) -> None:
+        self.store: dict[str, str] = {}
+
+    async def get(self, key: str):
+        return self.store.get(key)
+
+    async def set(self, key: str, value: str, nx: bool = False, ex: int | None = None):
+        if nx and key in self.store:
+            return None
+        self.store[key] = value
+        return True
+
+
+async def test_create_brief_is_idempotent_per_key(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # P2.6: same Idempotency-Key -> same brief, enqueued only once.
+    _use_session(_FakeSession(scalar=0))
+    fake_redis = _FakeRedis()
+    monkeypatch.setattr("app.api.routes.briefs.get_redis", lambda: fake_redis)
+    enqueues: list = []
+
+    class _StubTask:
+        def delay(self, *args, **kwargs) -> None:
+            enqueues.append(args)
+
+    monkeypatch.setattr("app.api.routes.briefs.generate_brief_task", _StubTask())
+
+    headers = {**AUTH, "Idempotency-Key": "abc-123"}
+    first = await client.post("/api/v1/briefs", json={"query": "same question"}, headers=headers)
+    second = await client.post("/api/v1/briefs", json={"query": "same question"}, headers=headers)
+
+    assert first.status_code == 202 and second.status_code == 202
+    assert first.json()["brief_id"] == second.json()["brief_id"]
+    assert len(enqueues) == 1  # the replay did not enqueue a second pipeline
+
+
 # --------------------------------------------------------------------------- #
 # P0.4 — upload hardening
 # --------------------------------------------------------------------------- #
@@ -139,7 +196,7 @@ async def test_upload_accepts_valid_pdf_and_enqueues(
     calls: list[tuple] = []
 
     class _StubTask:
-        def delay(self, *args) -> None:
+        def delay(self, *args, **kwargs) -> None:
             calls.append(args)
 
     monkeypatch.setattr("app.api.routes.documents.ingest_document_task", _StubTask())
