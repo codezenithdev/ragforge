@@ -25,6 +25,7 @@ from tenacity import (
     wait_exponential,
 )
 
+from app.core.anthropic_client import record_openai_embedding_usage
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,7 @@ class Embedder:
     )
     async def _embed_request(self, texts: list[str]) -> list[list[float]]:
         resp = await self._client.embeddings.create(model=self.model, input=texts)
+        record_openai_embedding_usage(getattr(resp, "usage", None), self.model)
         return [item.embedding for item in resp.data]
 
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:

@@ -1,0 +1,25 @@
+{
+  "_comment": "Deterministic golden set for the offline retrieval gate (recall@k / MRR over BM25 + RRF). Self-contained chunks (no chunker dependency). Expand with real corpus/queries over time. End-to-end answer quality is graded separately by scripts/run_eval.py.",
+  "corpus": [
+    {"id": "doc-rag::0", "text": "Retrieval-augmented generation combines a retriever with a language model to ground answers in external documents."},
+    {"id": "doc-rag::1", "text": "Hybrid retrieval fuses dense vector search with sparse BM25 keyword matching using reciprocal rank fusion."},
+    {"id": "doc-rag::2", "text": "A cross-encoder reranker rescores candidate passages by jointly encoding the query and each passage together."},
+    {"id": "doc-cache::0", "text": "Prompt caching stores a stable prefix so repeated requests reuse it, reducing token cost and latency."},
+    {"id": "doc-cache::1", "text": "The minimum cacheable prefix is a few thousand tokens; shorter prompts silently fail to cache."},
+    {"id": "doc-celery::0", "text": "Celery workers process background tasks asynchronously using Redis as the broker and result backend."},
+    {"id": "doc-celery::1", "text": "Idempotent task handling with acks_late prevents a redelivered message from running the pipeline twice."},
+    {"id": "doc-eval::0", "text": "RAGAS measures faithfulness, answer relevancy, and context precision for retrieval-augmented systems."}
+  ],
+  "queries": [
+    {"query": "what is retrieval augmented generation", "expected_ids": ["doc-rag::0"]},
+    {"query": "how does hybrid retrieval fuse dense and sparse", "expected_ids": ["doc-rag::1"]},
+    {"query": "what does a cross-encoder reranker do", "expected_ids": ["doc-rag::2"]},
+    {"query": "how does prompt caching reduce token cost", "expected_ids": ["doc-cache::0"]},
+    {"query": "minimum cacheable prefix tokens", "expected_ids": ["doc-cache::1"]},
+    {"query": "celery broker redis background tasks", "expected_ids": ["doc-celery::0"]},
+    {"query": "idempotent acks_late redelivered task pipeline", "expected_ids": ["doc-celery::1"]},
+    {"query": "ragas faithfulness answer relevancy context precision", "expected_ids": ["doc-eval::0"]},
+    {"query": "reciprocal rank fusion bm25 vector search", "expected_ids": ["doc-rag::1"]},
+    {"query": "grounding answers in external documents", "expected_ids": ["doc-rag::0"]}
+  ]
+}

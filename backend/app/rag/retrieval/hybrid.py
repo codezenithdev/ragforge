@@ -20,6 +20,40 @@ from app.rag.types import ScoredChunk
 logger = logging.getLogger(__name__)
 
 
+def rrf_fuse(
+    vector_hits: list[ScoredChunk], bm25_hits: list[ScoredChunk], rrf_k: int
+) -> list[ScoredChunk]:
+    """Reciprocal Rank Fusion over two ranked lists. Module-level so the retrieval
+    eval can exercise this exact ranking logic offline (no clients needed)."""
+    rrf_scores: dict[str, float] = {}
+    chunks: dict[str, ScoredChunk] = {}
+
+    for result_list in (vector_hits, bm25_hits):
+        for rank, chunk in enumerate(result_list):
+            rrf_scores[chunk.chunk_id] = rrf_scores.get(chunk.chunk_id, 0.0) + 1.0 / (
+                rrf_k + rank + 1
+            )
+            existing = chunks.get(chunk.chunk_id)
+            if existing is None:
+                chunks[chunk.chunk_id] = chunk
+            else:
+                # Merge component scores so both are retained on the kept object.
+                if chunk.vector_score is not None:
+                    existing.vector_score = chunk.vector_score
+                if chunk.bm25_score is not None:
+                    existing.bm25_score = chunk.bm25_score
+
+    merged: list[ScoredChunk] = []
+    for chunk_id, rrf in rrf_scores.items():
+        chunk = chunks[chunk_id]
+        chunk.rrf_score = rrf
+        chunk.score = rrf
+        merged.append(chunk)
+
+    merged.sort(key=lambda c: c.rrf_score or 0.0, reverse=True)
+    return merged
+
+
 class HybridRetriever:
     def __init__(
         self,
@@ -60,30 +94,4 @@ class HybridRetriever:
     def _rrf_fuse(
         self, vector_hits: list[ScoredChunk], bm25_hits: list[ScoredChunk]
     ) -> list[ScoredChunk]:
-        rrf_scores: dict[str, float] = {}
-        chunks: dict[str, ScoredChunk] = {}
-
-        for result_list in (vector_hits, bm25_hits):
-            for rank, chunk in enumerate(result_list):
-                rrf_scores[chunk.chunk_id] = rrf_scores.get(chunk.chunk_id, 0.0) + 1.0 / (
-                    self.rrf_k + rank + 1
-                )
-                existing = chunks.get(chunk.chunk_id)
-                if existing is None:
-                    chunks[chunk.chunk_id] = chunk
-                else:
-                    # Merge component scores so both are retained on the kept object.
-                    if chunk.vector_score is not None:
-                        existing.vector_score = chunk.vector_score
-                    if chunk.bm25_score is not None:
-                        existing.bm25_score = chunk.bm25_score
-
-        merged: list[ScoredChunk] = []
-        for chunk_id, rrf in rrf_scores.items():
-            chunk = chunks[chunk_id]
-            chunk.rrf_score = rrf
-            chunk.score = rrf
-            merged.append(chunk)
-
-        merged.sort(key=lambda c: c.rrf_score or 0.0, reverse=True)
-        return merged
+        return rrf_fuse(vector_hits, bm25_hits, self.rrf_k)

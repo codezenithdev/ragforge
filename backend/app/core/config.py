@@ -143,6 +143,18 @@ class Settings(BaseSettings):
     # Sections scoring below this faithfulness value get a low-confidence flag.
     faithfulness_warn_threshold: float = 0.6
 
+    # --- Cost telemetry ---
+    # Per-model price ($/1M tokens) as (input, output). Used only to annotate the
+    # per-brief usage log line with an estimate; not billing-accurate. Update when
+    # model pricing changes. Embedding models price output at 0.
+    model_prices: dict[str, tuple[float, float]] = {
+        "claude-sonnet-4-6": (3.0, 15.0),
+        "claude-haiku-4-5": (1.0, 5.0),
+        "text-embedding-3-small": (0.02, 0.0),
+    }
+    # Log a warning when a single brief's total tokens exceed this. 0 disables.
+    brief_token_warn_threshold: int = 200_000
+
     # ------------------------------------------------------------------ #
     # Derived helpers & production validation
     # ------------------------------------------------------------------ #

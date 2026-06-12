@@ -18,6 +18,7 @@ import anthropic
 import instructor
 from pydantic import BaseModel, Field
 
+from app.core.anthropic_client import get_anthropic_client, record_anthropic_usage
 from app.core.config import settings
 from app.rag.retrieval.reranker import CrossEncoderReranker
 from app.rag.types import CRAGAction, CRAGResult, ScoredChunk
@@ -44,7 +45,7 @@ class CRAGEvaluator:
         anthropic_client: anthropic.AsyncAnthropic | None = None,
     ) -> None:
         self.reranker = reranker
-        client = anthropic_client or anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        client = anthropic_client or get_anthropic_client()
         self._instructor = instructor.from_anthropic(client)
         self.model = settings.subtask_model
         self.threshold = settings.crag_confidence_threshold
@@ -80,7 +81,7 @@ class CRAGEvaluator:
         return CRAGResult(action=CRAGAction.PROCEED, top_score=top_prob)
 
     async def _web_queries(self, query: str) -> list[str]:
-        result = await self._instructor.messages.create(
+        result, completion = await self._instructor.messages.create_with_completion(
             model=self.model,
             max_tokens=512,
             system=_WEBQ_SYSTEM,
@@ -96,4 +97,5 @@ class CRAGEvaluator:
             ],
             response_model=_WebQueries,
         )
+        record_anthropic_usage(getattr(completion, "usage", None), self.model)
         return [q.strip() for q in result.queries if q.strip()][:3]

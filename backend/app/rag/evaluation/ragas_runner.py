@@ -13,6 +13,7 @@ import logging
 from dataclasses import dataclass, field
 
 from app.core.config import settings
+from app.rag.generation.context_format import wrap_untrusted
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +76,13 @@ class RAGASRunner:
         else:
             metrics.append(LLMContextPrecisionWithoutReference())
 
+        # Delimit each context as untrusted data (P3.2): RAGAS feeds these into a
+        # judge LLM, so an injected directive in a chunk could otherwise skew the
+        # metric scores.
         sample = SingleTurnSample(
             user_input=question,
             response=answer,
-            retrieved_contexts=contexts,
+            retrieved_contexts=[wrap_untrusted(c, i + 1) for i, c in enumerate(contexts)],
             reference=ground_truth,
         )
         result = evaluate(

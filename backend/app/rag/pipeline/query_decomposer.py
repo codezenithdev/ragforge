@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import logging
 
-import anthropic
 import instructor
 from pydantic import BaseModel, Field
 
+from app.core.anthropic_client import get_anthropic_client, record_anthropic_usage
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -41,13 +41,14 @@ class _SubQuestions(BaseModel):
 
 class QueryDecomposer:
     def __init__(self) -> None:
-        self._anthropic = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._anthropic = get_anthropic_client()
         self._instructor = instructor.from_anthropic(self._anthropic)
         self.model = settings.subtask_model
         self.n = settings.num_sub_queries
 
     async def decompose(self, query: str) -> list[str]:
-        result = await self._instructor.messages.create(
+        # System prompt is short (< cache minimum) — not cached intentionally.
+        result, completion = await self._instructor.messages.create_with_completion(
             model=self.model,
             max_tokens=1024,
             system=_DECOMPOSE_SYSTEM,
@@ -65,6 +66,7 @@ class QueryDecomposer:
             ],
             response_model=_SubQuestions,
         )
+        record_anthropic_usage(getattr(completion, "usage", None), self.model)
         sub_queries = [q.strip() for q in result.questions if q.strip()][: self.n]
         logger.info("QueryDecomposer: '%s' -> %d sub-queries", query[:60], len(sub_queries))
         return sub_queries
@@ -78,6 +80,7 @@ class QueryDecomposer:
                 {"role": "user", "content": f"Question: {sub_query}\n\nWrite the paragraph:"}
             ],
         )
+        record_anthropic_usage(getattr(resp, "usage", None), self.model)
         text = "".join(b.text for b in resp.content if b.type == "text").strip()
         logger.info("QueryDecomposer: HyDE for '%s' (%d chars)", sub_query[:50], len(text))
         return text

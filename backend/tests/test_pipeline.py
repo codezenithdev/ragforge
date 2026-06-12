@@ -173,6 +173,67 @@ async def test_crag_corrective_path_triggers_web_search(
     assert state["brief"].title == "Test Brief"
 
 
+# --- Intra-pipeline resilience (#4) ---
+
+
+async def test_decompose_tolerates_hyde_failure(proceed_components: FakeComponents) -> None:
+    fake = proceed_components
+
+    async def flaky_hyde(sub_query: str) -> str:
+        if sub_query == "sub one":
+            raise RuntimeError("hyde 529")
+        return f"hyde for {sub_query}"
+
+    fake.decomposer.generate_hyde_document = flaky_hyde  # type: ignore[method-assign]
+
+    state = await graph_module.briefr_graph.ainvoke({"query": "q"})
+
+    # Both sub-queries are retained; the failed HyDE falls back to embedding the
+    # sub-query text, and the brief still completes.
+    assert state["sub_queries"] == ["sub one", "sub two"]
+    assert state["hyde_documents"][0] == "sub one"
+    assert state["hyde_documents"][1] == "hyde for sub two"
+    assert isinstance(state["brief"], BriefOutput)
+
+
+async def test_decompose_falls_back_to_bare_query(proceed_components: FakeComponents) -> None:
+    fake = proceed_components
+
+    async def boom(query: str) -> list[str]:
+        raise RuntimeError("decompose down")
+
+    fake.decomposer.decompose = boom  # type: ignore[method-assign]
+
+    state = await graph_module.briefr_graph.ainvoke({"query": "the bare question"})
+
+    assert state["sub_queries"] == ["the bare question"]
+    assert len(state["hyde_documents"]) == 1
+    assert isinstance(state["brief"], BriefOutput)
+
+
+async def test_retrieve_tolerates_partial_subquery_failure(
+    proceed_components: FakeComponents,
+) -> None:
+    fake = proceed_components
+    calls = {"n": 0}
+
+    async def flaky_retrieve(query, query_embedding, top_k=None, filter_doc_ids=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("vector store timeout")
+        chunk = make_chunk("survivor", document_id="d1")
+        chunk.rrf_score = 0.02
+        return [chunk]
+
+    fake.hybrid.retrieve = flaky_retrieve  # type: ignore[method-assign]
+
+    state = await graph_module.briefr_graph.ainvoke({"query": "q"})
+
+    # One sub-query retrieval failed; the brief still completes on the survivor.
+    assert {c.chunk_id for c in state["retrieved_chunks"]} == {"survivor"}
+    assert isinstance(state["brief"], BriefOutput)
+
+
 # --- CRAGEvaluator routing thresholds (real evaluator, fake reranker) ---
 
 

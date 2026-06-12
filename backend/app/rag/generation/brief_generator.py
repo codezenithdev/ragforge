@@ -13,11 +13,12 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime
 
-import anthropic
 import instructor
 from pydantic import BaseModel, Field
 
+from app.core.anthropic_client import get_anthropic_client, record_anthropic_usage
 from app.core.config import settings
+from app.rag.generation.context_format import wrap_untrusted
 from app.rag.generation.schemas import BriefOutput, BriefSection, SourceReference
 from app.rag.types import ScoredChunk
 
@@ -37,6 +38,14 @@ _SYSTEM = (
     "explicitly when the evidence is weak. key_facts must contain 3-5 specific, "
     "individually-sourced factual claims."
 )
+
+# System prompt as a cacheable block. On its own it is below the per-model cache
+# minimum (2048 tok Sonnet / 4096 tok Haiku), so the real cache prefix is system
+# + the (large) context block in the user turn, which is marked separately in
+# generate(). Caching pays off only when the identical brief is reprocessed
+# (Celery acks_late redelivery / idempotent replay); verify via the per-brief
+# usage log (cache_read_input_tokens > 0).
+_SYSTEM_BLOCKS = [{"type": "text", "text": _SYSTEM, "cache_control": {"type": "ephemeral"}}]
 
 
 # --- Models the LLM produces (no confidence / timestamp — those are added later) ---
@@ -64,21 +73,19 @@ class _LLMBrief(BaseModel):
 
 class BriefGenerator:
     def __init__(self) -> None:
-        self._anthropic = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+        self._anthropic = get_anthropic_client()
         self._instructor = instructor.from_anthropic(self._anthropic)
         self.model = settings.generation_model
 
     @staticmethod
     def _format_context(chunks: list[ScoredChunk]) -> str:
         # Wrap each untrusted block in explicit delimiters (P3.2) so injected
-        # directives can't be mistaken for instructions. A stray closing tag in
-        # the content is neutralized so it can't end the block early.
-        blocks = []
-        for i, chunk in enumerate(chunks, start=1):
-            source_type = chunk.metadata.get("source", "document")
-            safe = chunk.content.replace("</context>", "<​/context>")
-            blocks.append(f'<context id="{i}" source="{source_type}">\n{safe}\n</context>')
-        return "\n\n".join(blocks)
+        # directives can't be mistaken for instructions. Shared with the
+        # faithfulness judge and RAGAS via context_format.wrap_untrusted.
+        return "\n\n".join(
+            wrap_untrusted(chunk.content, i, chunk.metadata.get("source", "document"))
+            for i, chunk in enumerate(chunks, start=1)
+        )
 
     @staticmethod
     def _build_sources(chunks: list[ScoredChunk]) -> list[SourceReference]:
@@ -101,22 +108,31 @@ class BriefGenerator:
 
     async def generate(self, query: str, chunks: list[ScoredChunk]) -> BriefOutput:
         context = self._format_context(chunks)
-        llm: _LLMBrief = await self._instructor.messages.create(
+        # Cache the (stable) system prompt prefix. The large context lives in the
+        # user turn; caching pays off on task redelivery (acks_late) / idempotent
+        # replays of the same brief. See _SYSTEM_BLOCKS below.
+        llm, completion = await self._instructor.messages.create_with_completion(
             model=self.model,
             max_tokens=4096,
-            system=_SYSTEM,
+            system=_SYSTEM_BLOCKS,
             messages=[
                 {
                     "role": "user",
-                    "content": (
-                        f"Research question: {query}\n\n"
-                        f"Context blocks:\n{context}\n\n"
-                        "Write the brief now."
-                    ),
+                    "content": [
+                        # Big, stable prefix: question + context. Breakpoint here so a
+                        # reprocessed identical brief reads it from cache.
+                        {
+                            "type": "text",
+                            "text": f"Research question: {query}\n\nContext blocks:\n{context}",
+                            "cache_control": {"type": "ephemeral"},
+                        },
+                        {"type": "text", "text": "Write the brief now."},
+                    ],
                 }
             ],
             response_model=_LLMBrief,
         )
+        record_anthropic_usage(getattr(completion, "usage", None), self.model)
         brief = BriefOutput(
             title=llm.title,
             executive_summary=self._section(llm.executive_summary),

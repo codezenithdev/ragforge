@@ -86,12 +86,32 @@ def _dedup(chunks: list[ScoredChunk]) -> list[ScoredChunk]:
 async def decompose_query(state: BriefState) -> dict[str, Any]:
     components = get_components()
     query = state["query"]
-    sub_queries = await components.decomposer.decompose(query)
-    hyde_documents = await asyncio.gather(
-        *(components.decomposer.generate_hyde_document(sq) for sq in sub_queries)
+
+    # Degraded path: if decomposition fails entirely, fall back to the bare query
+    # rather than failing the whole brief.
+    try:
+        sub_queries = await components.decomposer.decompose(query)
+    except Exception:  # noqa: BLE001 - transient LLM failure shouldn't abort the brief
+        logger.warning("node decompose_query: decomposition failed; using bare query", exc_info=True)
+        sub_queries = []
+    if not sub_queries:
+        sub_queries = [query]
+
+    # HyDE per sub-query, fault-tolerant: one failed generation falls back to
+    # embedding the sub-query text itself (keeps coverage) instead of aborting.
+    hyde_results = await asyncio.gather(
+        *(components.decomposer.generate_hyde_document(sq) for sq in sub_queries),
+        return_exceptions=True,
     )
+    hyde_documents: list[str] = []
+    for sq, res in zip(sub_queries, hyde_results, strict=False):
+        if isinstance(res, BaseException) or not res:
+            logger.warning("node decompose_query: HyDE failed for %r; using sub-query text", sq[:60])
+            hyde_documents.append(sq)
+        else:
+            hyde_documents.append(res)
     logger.info("node decompose_query: %d sub-queries", len(sub_queries))
-    return {"sub_queries": sub_queries, "hyde_documents": list(hyde_documents)}
+    return {"sub_queries": sub_queries, "hyde_documents": hyde_documents}
 
 
 async def retrieve(state: BriefState) -> dict[str, Any]:
@@ -102,21 +122,32 @@ async def retrieve(state: BriefState) -> dict[str, Any]:
 
     # HyDE: embed the hypothetical-answer paragraphs and retrieve with those vectors.
     embeddings = await components.embedder.embed_batch(hyde_documents)
+    # Fault-tolerant fan-out: one failed sub-query retrieval contributes no chunks
+    # instead of aborting the brief.
     results = await asyncio.gather(
         *(
             components.hybrid.retrieve(sub_queries[i], embeddings[i], filter_doc_ids=doc_ids)
             for i in range(len(sub_queries))
-        )
+        ),
+        return_exceptions=True,
     )
 
     # Merge across sub-queries, dedup by chunk_id, keep the best RRF score.
     merged: dict[str, ScoredChunk] = {}
+    failures = 0
     for hits in results:
+        if isinstance(hits, BaseException):
+            failures += 1
+            continue
         for chunk in hits:
             existing = merged.get(chunk.chunk_id)
             if existing is None or (chunk.rrf_score or 0.0) > (existing.rrf_score or 0.0):
                 merged[chunk.chunk_id] = chunk
     chunks = list(merged.values())
+    if failures:
+        logger.warning(
+            "node retrieve: %d/%d sub-query retrievals failed", failures, len(sub_queries)
+        )
     logger.info(
         "node retrieve: %d sub-queries -> %d unique chunks", len(sub_queries), len(chunks)
     )

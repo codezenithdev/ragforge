@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Python backend. The langchain/ragas stack is intentionally pinned to the
+  # 0.3-era (ragas 0.2.10 hard-imports modules removed in langchain 0.4+); review
+  # those bumps carefully and run the eval path before merging (see P3.3).
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      langchain-ragas:
+        patterns:
+          - "langchain*"
+          - "ragas"
+
+  # Frontend
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # CI actions
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

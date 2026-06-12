@@ -64,6 +64,7 @@ async def _set_status(brief_id: uuid.UUID, **fields: object) -> None:
 
 
 async def _run_pipeline(brief_id_str: str, document_ids: list[str] | None) -> None:
+    from app.core.anthropic_client import UsageTotals, usage_var
     from app.core.database import AsyncSessionLocal
     from app.models import Brief, BriefStatus, BriefSubQuery
     from app.rag.pipeline.graph import briefr_graph
@@ -83,6 +84,11 @@ async def _run_pipeline(brief_id_str: str, document_ids: list[str] | None) -> No
         brief.status = BriefStatus.processing
         brief.processing_started_at = datetime.now(UTC)
         await session.commit()
+
+    # Per-brief token/cost accounting. The mutable accumulator is shared across
+    # the graph's concurrent nodes via the contextvar (set before ainvoke).
+    usage = UsageTotals()
+    usage_var.set(usage)
 
     try:
         # Hard timeout inside the loop (P1.2) — SIGALRM soft limits are unreliable
@@ -130,6 +136,34 @@ async def _run_pipeline(brief_id_str: str, document_ids: list[str] | None) -> No
         await _set_status(
             brief_id, status=BriefStatus.failed, result={"error": str(exc)}
         )
+    finally:
+        # One structured usage line per brief (emitted even on timeout/failure so
+        # partial spend is visible), correlated by request id via the JSON logger.
+        total_tokens = usage.input_tokens + usage.output_tokens
+        logger.info(
+            "generate_brief_task: brief %s usage",
+            brief_id,
+            extra={
+                "event": "brief_usage",
+                "brief_id": str(brief_id),
+                "tokens_in": usage.input_tokens,
+                "tokens_out": usage.output_tokens,
+                "cache_read": usage.cache_read_input_tokens,
+                "cache_write": usage.cache_creation_input_tokens,
+                "est_cost_usd": usage.estimated_cost_usd(),
+                "by_model": usage.by_model,
+            },
+        )
+        if (
+            settings.brief_token_warn_threshold
+            and total_tokens > settings.brief_token_warn_threshold
+        ):
+            logger.warning(
+                "generate_brief_task: brief %s used %d tokens (> warn threshold %d)",
+                brief_id,
+                total_tokens,
+                settings.brief_token_warn_threshold,
+            )
 
 
 @celery_app.task(

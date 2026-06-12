@@ -109,6 +109,22 @@ cd ../frontend && npm install && npm run dev
 cd backend && .venv/Scripts/python -m pytest -q
 ```
 
+### Evaluation
+
+Two layers (see `backend/app/rag/evaluation/`):
+
+- **Offline retrieval gate** — `tests/test_eval_retrieval.py` scores `recall@k` / `MRR`
+  for the BM25 + RRF ranking over a committed golden set (`tests/data/golden/golden.json`).
+  Deterministic, no keys/services — runs in normal CI and fails if ranking regresses.
+- **On-demand quality eval** — `python scripts/run_eval.py` runs the full pipeline over the
+  golden queries and aggregates per-section faithfulness + RAGAS (and est. token cost) into
+  `eval-out/report.json`. Needs API keys + Chroma + the corpus ingested, so it is **not** in
+  CI — run it before a release and when tuning knobs (`crag_confidence_threshold`,
+  `num_sub_queries`, …) so changes are measured against a baseline rather than guessed.
+
+Per-brief **token/cost telemetry** is logged as one structured `brief_usage` line per brief
+(tokens in/out, cache read/write, `est_cost_usd`, per-model breakdown), correlated by request id.
+
 Every model name and threshold lives in `backend/app/core/config.py` and can be overridden via environment variables — nothing is hardcoded.
 
 ### Notes & decisions
