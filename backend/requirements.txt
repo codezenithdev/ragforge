@@ -7,7 +7,7 @@ slowapi==0.1.9                    # per-identity rate limiting (Redis-backed)
 gunicorn==23.0.0                  # prod process manager (uvicorn workers)
 
 # --- Relational DB (documents, briefs, sub-queries) ---
-sqlalchemy[asyncio]==2.0.36
+sqlalchemy[asyncio]==2.0.50
 asyncpg==0.30.0
 psycopg2-binary==2.9.10
 alembic==1.14.0
